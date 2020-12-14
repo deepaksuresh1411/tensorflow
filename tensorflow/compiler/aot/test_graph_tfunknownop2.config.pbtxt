@@ -1,25 +1,33 @@
 # Text form of tensorflow.tf2xla.Config proto.
-feed {
+feed 
+{
   id { node_name: "x_const" }
-  shape {
+  shape 
+  {
     dim { size: 1 }
   }
 }
-feed {
+feed 
+{
   id { node_name: "y_const" }
-  shape {
+  shape 
+  {
     dim { size: 1 }
   }
 }
-feed {
+feed 
+{
   id { node_name: "z_identity"}
-  shape {
+  shape 
+  {
     dim { size: 1 }
   }
 }
-fetch {
+fetch 
+{
   id { node_name: "x_y_sum" }
 }
-fetch {
+fetch
+{
   id { node_name: "x_z_sum" }
 }
