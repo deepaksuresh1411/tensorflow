@@ -21,24 +21,32 @@ namespace TFL {
 namespace {
 
 struct IdentifyDilatedConvPass
-    : public PassWrapper<IdentifyDilatedConvPass, FunctionPass> {
-  void runOnFunction() override;
+    : public PassWrapper<IdentifyDilatedConvPass, OperationPass<FuncOp>> {
+  void runOnOperation() override;
+
+  StringRef getArgument() const final {
+    // This is the argument used to refer to the pass in
+    // the textual format (on the commandline for example).
+    return "tfl-identify-dilated-conv";
+  }
+  StringRef getDescription() const final {
+    // This is a brief description of the pass.
+    return "Identify and replace patterns for dilated convolution.";
+  }
 };
 
-void IdentifyDilatedConvPass::runOnFunction() {
-  OwningRewritePatternList patterns;
-  auto func = getFunction();
+void IdentifyDilatedConvPass::runOnOperation() {
+  RewritePatternSet patterns(&getContext());
+  auto func = getOperation();
 
-  patterns.insert<ConvertTFDilatedConvOp<TF::Conv2DOp>,
-                  ConvertTFDilatedConvOp<TF::DepthwiseConv2dNativeOp>>(
+  patterns.add<ConvertTFDilatedConvOp<TF::Conv2DOp>,
+               ConvertTFDilatedConvOp<TF::DepthwiseConv2dNativeOp>>(
       &getContext());
-  applyPatternsAndFoldGreedily(func, std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
 }  // namespace
 
-static PassRegistration<IdentifyDilatedConvPass> pass(
-    "tfl-identify-dilated-conv",
-    "Identify and replace patterns for dilated convolution.");
+static PassRegistration<IdentifyDilatedConvPass> pass;
 
 }  // namespace TFL
 }  // namespace mlir

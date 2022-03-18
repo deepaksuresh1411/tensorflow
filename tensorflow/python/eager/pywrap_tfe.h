@@ -177,7 +177,7 @@ PyObject* TFE_Py_TapeSetShouldRecordBackprop(PyObject* tensors);
 PyObject* TFE_Py_TapeSetPossibleGradientTypes(PyObject* tensors);
 
 void TFE_Py_TapeWatch(PyObject* tape, PyObject* tensor);
-void TFE_Py_TapeSetDeleteTrace(tensorflow::int64 tensor_id);
+void TFE_Py_TapeSetDeleteTrace(int64_t tensor_id);
 
 // Stops any gradient recording on the current thread.
 //
@@ -365,22 +365,16 @@ PyObject* TFE_Py_TensorShapeSlice(PyObject* tensors, int slice_dim);
 // The shape is represented as a Python tuple of integers.
 PyObject* TFE_Py_TensorShapeOnDevice(PyObject* tensor);
 
-// Encodes the object as a tuple that is meant to be used as part of the key
-// for the defun function cache.  If `include_tensor_ranks_only` is true,
-// then the encoding only stores tensor ranks, and the key is
-// agnostic to dimension sizes.  Otherwise, full tensor shape encodings are
-// returned.
-PyObject* TFE_Py_EncodeArg(PyObject*, bool include_tensor_ranks_only);
-
 void TFE_Py_EnableInteractivePythonLogging();
 
-// Sets `python_context` as the current eager Context object (defined
+// Sets the current Python eager Context object (defined
 // in eager/context.py). This function must be called at least once before
 // eager tensors are created.
 // If an error is encountered, sets python error and returns NULL. Else, returns
 // Py_None.
 //
-// This function is not thread-safe.
+// Not thread-safe.
+// TODO(mdan): Retire this - non-Python users should only need the EagerContext.
 PyObject* TFE_Py_SetEagerContext(PyObject* py_context);
 
 // Returns the current eager Context object (defined in eager/context.py)

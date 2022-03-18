@@ -25,11 +25,7 @@ Requires a local installation of `tensorflow_docs`:
 pip install git+https://github.com/tensorflow/docs
 ```
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import distutils
 import pathlib
 import textwrap
 
@@ -41,6 +37,8 @@ import tensorflow as tf
 from tensorflow_docs.api_generator import doc_controls
 from tensorflow_docs.api_generator import doc_generator_visitor
 from tensorflow_docs.api_generator import generate_lib
+from tensorflow_docs.api_generator.pretty_docs import base_page
+from tensorflow_docs.api_generator.pretty_docs import module_page
 
 from tensorflow.python.framework import ops
 from tensorflow.python.util import tf_export
@@ -48,6 +46,15 @@ from tensorflow.python.util import tf_inspect
 
 # Caution: the google and oss versions of this import are different.
 import base_dir
+
+# pylint: disable=g-import-not-at-top
+try:
+  from tensorflow.python.types import doc_typealias
+  _EXTRA_DOCS = getattr(doc_typealias, "_EXTRA_DOCS", {})
+  del doc_typealias
+except ImportError:
+  _EXTRA_DOCS = {}
+# pylint: enable=g-import-not-at-top
 
 # `tf` has an `__all__` that doesn't list important things like `keras`.
 # The doc generator recognizes `__all__` as the list of public symbols.
@@ -77,10 +84,6 @@ flags.DEFINE_string(
     "The path prefix (up to `.../api_docs/python`) used in the "
     "`_toc.yaml` and `_redirects.yaml` files")
 
-flags.DEFINE_bool("gen_report", False,
-                  ("Generate an API report containing the health of the"
-                   "docstrings of the public API."))
-
 _PRIVATE_MAP = {
     "tf": ["python", "core", "compiler", "examples", "tools", "contrib"],
     # There's some aliasing between the compats and v1/2s, so it's easier to
@@ -98,38 +101,51 @@ tf.__doc__ = """
   """
 
 
-def generate_raw_ops_doc():
-  """Generates docs for `tf.raw_ops`."""
+class RawOpsPageInfo(module_page.ModulePageInfo):
+  """Generates a custom page for `tf.raw_ops`."""
+  DEFAULT_BUILDER_CLASS = base_page.TemplatePageBuilder
 
-  warning = textwrap.dedent("""\n
-    Note: `tf.raw_ops` provides direct/low level access to all TensorFlow ops.
-    See [the RFC](https://github.com/tensorflow/community/blob/master/rfcs/20181225-tf-raw-ops.md)
-    for details. Unless you are library writer, you likely do not need to use
-    these ops directly.""")
+  def build(self):
+    # Skip the ModulePage implementation, which doesn't use a template.
+    content = base_page.PageInfo.build(self)
 
-  table_header = textwrap.dedent("""
+    raw_ops_doc = self.generate_raw_ops_doc()
 
-      | Op Name | Has Gradient |
-      |---------|:------------:|""")
+    return "\n".join([content, raw_ops_doc])
 
-  parts = [warning, table_header]
+  def generate_raw_ops_doc(self):
+    """Generates docs for `tf.raw_ops`."""
+    del self
 
-  for op_name in sorted(dir(tf.raw_ops)):
-    try:
-      ops._gradient_registry.lookup(op_name)  # pylint: disable=protected-access
-      has_gradient = "\N{HEAVY CHECK MARK}\N{VARIATION SELECTOR-16}"
-    except LookupError:
-      has_gradient = "\N{CROSS MARK}"
+    warning = textwrap.dedent("""\n
+      Note: `tf.raw_ops` provides direct/low level access to all TensorFlow ops.
+      See [the RFC](https://github.com/tensorflow/community/blob/master/rfcs/20181225-tf-raw-ops.md)
+      for details. Unless you are library writer, you likely do not need to use
+      these ops directly.""")
 
-    if not op_name.startswith("_"):
-      path = pathlib.Path("/") / FLAGS.site_path / "tf/raw_ops" / op_name
-      path = path.with_suffix(".md")
-      link = ('<a id={op_name} href="{path}">{op_name}</a>').format(
-          op_name=op_name, path=str(path))
-      parts.append("| {link} | {has_gradient} |".format(
-          link=link, has_gradient=has_gradient))
+    table_header = textwrap.dedent("""
 
-  return "\n".join(parts)
+        | Op Name | Has Gradient |
+        |---------|:------------:|""")
+
+    parts = [warning, table_header]
+
+    for op_name in sorted(dir(tf.raw_ops)):
+      try:
+        ops._gradient_registry.lookup(op_name)  # pylint: disable=protected-access
+        has_gradient = "\N{HEAVY CHECK MARK}\N{VARIATION SELECTOR-16}"
+      except LookupError:
+        has_gradient = "\N{CROSS MARK}"
+
+      if not op_name.startswith("_"):
+        path = pathlib.Path("/") / FLAGS.site_path / "tf/raw_ops" / op_name
+        path = path.with_suffix(".md")
+        link = ('<a id={op_name} href="{path}">{op_name}</a>').format(
+            op_name=op_name, path=str(path))
+        parts.append("| {link} | {has_gradient} |".format(
+            link=link, has_gradient=has_gradient))
+
+    return "\n".join(parts)
 
 
 # The doc generator isn't aware of tf_export.
@@ -139,7 +155,9 @@ class TfExportAwareVisitor(doc_generator_visitor.DocGeneratorVisitor):
   """A `tf_export`, `keras_export` and `estimator_export` aware doc_visitor."""
 
   def _score_name(self, name):
-    all_exports = [tf_export.TENSORFLOW_API_NAME, tf_export.ESTIMATOR_API_NAME]
+    all_exports = [tf_export.TENSORFLOW_API_NAME,
+                   tf_export.KERAS_API_NAME,
+                   tf_export.ESTIMATOR_API_NAME]
 
     for api_name in all_exports:
       canonical = tf_export.get_canonical_name_for_symbol(
@@ -155,18 +173,19 @@ class TfExportAwareVisitor(doc_generator_visitor.DocGeneratorVisitor):
     return (canonical_score,) + scores
 
 
-def build_docs(output_dir, code_url_prefix, search_hints, gen_report):
+def build_docs(output_dir, code_url_prefix, search_hints):
   """Build api docs for tensorflow v2.
 
   Args:
     output_dir: A string path, where to put the files.
     code_url_prefix: prefix for "Defined in" links.
     search_hints: Bool. Include meta-data search hints at the top of each file.
-    gen_report: Bool. Generates an API report containing the health of the
-      docstrings of the public API.
   """
+  if distutils.version.LooseVersion(tf.__version__) >= "2.9":
+    doc_controls.set_deprecated(tf.keras.preprocessing)
+
   # The custom page will be used for raw_ops.md not the one generated above.
-  doc_controls.set_custom_page_content(tf.raw_ops, generate_raw_ops_doc())
+  doc_controls.set_custom_page_builder_cls(tf.raw_ops, RawOpsPageInfo)
 
   # Hide raw_ops from search.
   for name, obj in tf_inspect.getmembers(tf.raw_ops):
@@ -179,35 +198,22 @@ def build_docs(output_dir, code_url_prefix, search_hints, gen_report):
         cls=cls,
         skip=["__init__"])
 
-  try:
-    doc_controls.do_not_generate_docs(tf.__internal__)
-  except AttributeError:
-    pass
-
-  try:
-    doc_controls.do_not_generate_docs(tf.__operators__)
-  except AttributeError:
-    pass
-
-  try:
-    doc_controls.do_not_generate_docs(tf.tools)
-  except AttributeError:
-    pass
-
-  try:
-    doc_controls.do_not_generate_docs(tf.compat.v1.pywrap_tensorflow)
-  except AttributeError:
-    pass
-
-  try:
-    doc_controls.do_not_generate_docs(tf.pywrap_tensorflow)
-  except AttributeError:
-    pass
-
-  try:
-    doc_controls.do_not_generate_docs(tf.flags)
-  except AttributeError:
-    pass
+  do_not_document = ["tf.__internal__",
+                     "tf.keras.__internal__",
+                     "tf.__operators__",
+                     "tf.tools",
+                     "tf.compat.v1.pywrap_tensorflow",
+                     "tf.pywrap_tensorflow",
+                     "tf.flags",
+                     "tf.batch_mat_mul_v3",
+                     "tf.sparse_segment_sum_grad"]
+  for path in do_not_document:
+    item = tf
+    for part in path.split(".")[1:]:
+      item = getattr(item, part, None)
+    if item is None:
+      continue
+    doc_controls.do_not_generate_docs(item)
 
   base_dirs, code_url_prefixes = base_dir.get_base_dirs_and_prefixes(
       code_url_prefix)
@@ -220,13 +226,10 @@ def build_docs(output_dir, code_url_prefix, search_hints, gen_report):
       site_path=FLAGS.site_path,
       visitor_cls=TfExportAwareVisitor,
       private_map=_PRIVATE_MAP,
-      gen_report=gen_report,
+      extra_docs=_EXTRA_DOCS
   )
 
   doc_generator.build(output_dir)
-
-  if gen_report:
-    return
 
   out_path = pathlib.Path(output_dir)
 
@@ -238,9 +241,7 @@ def build_docs(output_dir, code_url_prefix, search_hints, gen_report):
       "tf/nn/sigmoid_cross_entropy_with_logits.md":
           "python/ops/nn_impl.py",
       "tf/keras/Model.md":
-          "tensorflow/python/keras/engine/training.py",
-      "tf/keras/preprocessing/image/random_brightness.md":
-          "keras_preprocessing/image/affine_transformations.py"
+          "keras/engine/training.py",
   }
 
   all_passed = True
@@ -285,8 +286,7 @@ def main(argv):
   build_docs(
       output_dir=FLAGS.output_dir,
       code_url_prefix=FLAGS.code_url_prefix,
-      search_hints=FLAGS.search_hints,
-      gen_report=FLAGS.gen_report,)
+      search_hints=FLAGS.search_hints)
 
 
 if __name__ == "__main__":

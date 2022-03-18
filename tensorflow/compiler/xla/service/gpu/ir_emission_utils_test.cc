@@ -15,11 +15,10 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/gpu/ir_emission_utils.h"
 
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
-#include "mlir/Parser.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/lhlo_ops.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/register.h"
+#include "mlir/Parser/Parser.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/lhlo/IR/lhlo_ops.h"
 #include "tensorflow/compiler/xla/tests/test_utils.h"
 #include "tensorflow/core/platform/test.h"
 
@@ -27,50 +26,53 @@ namespace xla {
 namespace gpu {
 
 TEST(IrEmissionUtilsTest, TestOperandPartitionNoAlias) {
-  mlir::MLIRContext context;
-  mlir::mhlo::registerAllMhloDialects(context.getDialectRegistry());
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::lmhlo::LmhloDialect>();
+  mlir::MLIRContext context(registry);
 
-  auto module = mlir::parseSourceString(R"(
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"(
     func @foo(%arg0 : memref<f32>, %arg1 : memref<f32>, %arg2 : memref<f32>) {
       "lmhlo.add" (%arg0, %arg1, %arg2) : (memref<f32>, memref<f32>, memref<f32>) -> ()
       "lmhlo.terminator" () : () -> ()
     }
   )",
-                                        &context);
+                                                        &context);
   mlir::FuncOp func = mlir::cast<mlir::FuncOp>(module->lookupSymbol("foo"));
-  mlir::Operation* op = &func.body().front().front();
+  mlir::Operation* op = &func.getBody().front().front();
   EXPECT_EQ(2, PartitionLmhloOperandsAndOutputs(op));
 }
 
 TEST(IrEmissionUtilsTest, TestOperandPartitionWithAlias0) {
-  mlir::MLIRContext context;
-  mlir::mhlo::registerAllMhloDialects(context.getDialectRegistry());
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::lmhlo::LmhloDialect>();
+  mlir::MLIRContext context(registry);
 
-  auto module = mlir::parseSourceString(R"(
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"(
     func @foo(%arg0 : memref<f32>, %arg1 : memref<f32>, %arg2 : memref<f32>) {
       "lmhlo.add" (%arg0, %arg1, %arg0) : (memref<f32>, memref<f32>, memref<f32>) -> ()
       "lmhlo.terminator" () : () -> ()
     }
   )",
-                                        &context);
+                                                        &context);
   mlir::FuncOp func = mlir::cast<mlir::FuncOp>(module->lookupSymbol("foo"));
-  mlir::Operation* op = &func.body().front().front();
+  mlir::Operation* op = &func.getBody().front().front();
   EXPECT_EQ(2, PartitionLmhloOperandsAndOutputs(op));
 }
 
 TEST(IrEmissionUtilsTest, TestOperandPartitionWithAlias1) {
-  mlir::MLIRContext context;
-  mlir::mhlo::registerAllMhloDialects(context.getDialectRegistry());
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::lmhlo::LmhloDialect>();
+  mlir::MLIRContext context(registry);
 
-  auto module = mlir::parseSourceString(R"(
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"(
     func @foo(%arg0 : memref<f32>, %arg1 : memref<f32>, %arg2 : memref<f32>) {
       "lmhlo.add" (%arg0, %arg1, %arg1) : (memref<f32>, memref<f32>, memref<f32>) -> ()
       "lmhlo.terminator" () : () -> ()
     }
   )",
-                                        &context);
+                                                        &context);
   mlir::FuncOp func = mlir::cast<mlir::FuncOp>(module->lookupSymbol("foo"));
-  mlir::Operation* op = &func.body().front().front();
+  mlir::Operation* op = &func.getBody().front().front();
   EXPECT_EQ(2, PartitionLmhloOperandsAndOutputs(op));
 }
 

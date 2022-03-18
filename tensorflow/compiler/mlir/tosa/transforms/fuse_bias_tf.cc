@@ -21,6 +21,7 @@ limitations under the License.
 #include <iterator>
 #include <numeric>
 
+#include "mlir/Dialect/Tosa/IR/TosaOps.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
@@ -32,15 +33,15 @@ limitations under the License.
 #define DEBUG_TYPE PASS_NAME
 
 namespace mlir {
-
 namespace tosa {
-
 namespace {
+#define GEN_PASS_CLASSES
+#include "tensorflow/compiler/mlir/tosa/transforms/passes.h.inc"
 
-class FuseBiasTF : public PassWrapper<FuseBiasTF, FunctionPass> {
+class FuseBiasTF : public TosaFusebiasTFPassBase<FuseBiasTF> {
  public:
   explicit FuseBiasTF() {}
-  void runOnFunction() override;
+  void runOnOperation() override;
 };
 
 struct ConvertTFBiasAddOp : public RewritePattern {
@@ -106,14 +107,14 @@ LogicalResult ConvertTFBiasAddOp::matchAndRewrite(
   return success();
 }
 
-void FuseBiasTF::runOnFunction() {
-  OwningRewritePatternList patterns;
+void FuseBiasTF::runOnOperation() {
+  RewritePatternSet patterns(&getContext());
   auto* ctx = &getContext();
-  auto func = getFunction();
+  auto func = getOperation();
 
   // Add the generated patterns to the list.
-  patterns.insert<ConvertTFBiasAddOp>(ctx);
-  applyPatternsAndFoldGreedily(func, std::move(patterns));
+  patterns.add<ConvertTFBiasAddOp>(ctx);
+  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
 
 }  // anonymous namespace
@@ -121,9 +122,6 @@ void FuseBiasTF::runOnFunction() {
 std::unique_ptr<OperationPass<FuncOp>> createFuseBiasTFPass() {
   return std::make_unique<FuseBiasTF>();
 }
-
-static PassRegistration<FuseBiasTF> pass(
-    PASS_NAME, "Fuse tf.Op + tf.BiasAdd and legalized to TOSA.");
 
 }  // namespace tosa
 

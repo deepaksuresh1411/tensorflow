@@ -14,9 +14,6 @@
 # ==============================================================================
 """Tests for tensorflow.ops.gradients."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 import sys
 import warnings
 
@@ -29,7 +26,9 @@ from tensorflow.python.eager import function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import function as framework_function
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import test_ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.framework.constant_op import constant
@@ -257,7 +256,7 @@ class GradientsTest(test_util.TensorFlowTestCase, parameterized.TestCase):
     with ops.Graph().as_default():
       x = array_ops.placeholder(dtypes.float32)
       y = array_ops.identity(x)
-      dy = ops.IndexedSlices(
+      dy = indexed_slices.IndexedSlices(
           array_ops.placeholder(dtypes.float32),
           array_ops.placeholder(dtypes.int32))
       dx, = gradients.gradients(y, x, grad_ys=dy)
@@ -749,7 +748,7 @@ class HessianTest(test_util.TensorFlowTestCase):
     mat_value = rng.randn(m, m).astype("float32")
     x_value = rng.randn(m).astype("float32")
     hess_value = mat_value + mat_value.T
-    with self.session(use_gpu=True):
+    with self.session():
       mat = constant_op.constant(mat_value)
       x = constant_op.constant(x_value)
       x_mat_x = math_ops.reduce_sum(x[:, None] * mat * x[None, :])
@@ -766,7 +765,7 @@ class HessianTest(test_util.TensorFlowTestCase):
     mat_values = [rng.randn(m, m).astype("float32") for _ in range(n)]
     x_values = [rng.randn(m).astype("float32") for _ in range(n)]
     hess_values = [mat_value + mat_value.T for mat_value in mat_values]
-    with self.session(use_gpu=True):
+    with self.session():
       mats = [constant_op.constant(mat_value) for mat_value in mat_values]
       xs = [constant_op.constant(x_value) for x_value in x_values]
       xs_mats_xs = [
@@ -781,7 +780,7 @@ class HessianTest(test_util.TensorFlowTestCase):
   @test_util.run_v1_only("b/120545219")
   def testHessianInvalidDimension(self):
     for shape in [(10, 10), None]:
-      with self.cached_session(use_gpu=True):
+      with self.cached_session():
         x = array_ops.placeholder(dtypes.float32, shape)
         # Expect a ValueError because the dimensions are wrong
         with self.assertRaises(ValueError):
@@ -795,7 +794,7 @@ class HessianTest(test_util.TensorFlowTestCase):
     m = 3
     rng = np.random.RandomState([1, 2, 3])
     x_value = rng.randn(m, m).astype("float32")
-    with self.session(use_gpu=True):
+    with self.session():
       x = constant_op.constant(x_value)
       x_square = math_ops.reduce_sum(
           math_ops.matmul(array_ops.transpose(x), x) * 0.5
@@ -815,7 +814,7 @@ class HessianTest(test_util.TensorFlowTestCase):
     n = 4
     rng = np.random.RandomState([1, 2, 3])
     x_value = rng.randn(m, n).astype("float32")
-    with self.session(use_gpu=True):
+    with self.session():
       x = constant_op.constant(x_value)
       x_square = math_ops.reduce_sum(
           math_ops.matmul(array_ops.transpose(x), x) * 0.5
@@ -865,7 +864,7 @@ class IndexedSlicesToTensorTest(test_util.TensorFlowTestCase):
       np_val = np.random.rand(4, 4, 4, 4).astype(np.float32)
       c = constant_op.constant(np_val)
       c_sparse = math_ops._as_indexed_slices(c)
-      c_sparse = ops.IndexedSlices(
+      c_sparse = indexed_slices.IndexedSlices(
           c_sparse.values,
           math_ops.cast(c_sparse.indices, dtypes.int64), c_sparse.dense_shape)
       self.assertAllEqual(np_val.shape, c_sparse.dense_shape)
@@ -880,7 +879,7 @@ class IndexedSlicesToTensorTest(test_util.TensorFlowTestCase):
       self.skipTest("Skipped test for Python 3.5+")
 
     # Smaller than the threshold: no warning.
-    c_sparse = ops.IndexedSlices(
+    c_sparse = indexed_slices.IndexedSlices(
         array_ops.placeholder(dtypes.float32),
         array_ops.placeholder(dtypes.int32), constant([4, 4, 4, 4]))
     with warnings.catch_warnings(record=True) as w:
@@ -888,7 +887,7 @@ class IndexedSlicesToTensorTest(test_util.TensorFlowTestCase):
     self.assertEqual(0, len(w))
 
     # Greater than or equal to the threshold: warning.
-    c_sparse = ops.IndexedSlices(
+    c_sparse = indexed_slices.IndexedSlices(
         array_ops.placeholder(dtypes.float32),
         array_ops.placeholder(dtypes.int32), constant([100, 100, 100, 100]))
     # "always" filter prevents the warning from being suppressed if it was
@@ -902,7 +901,7 @@ class IndexedSlicesToTensorTest(test_util.TensorFlowTestCase):
         str(w[0].message))
 
     # Unknown dense shape: warning.
-    c_sparse = ops.IndexedSlices(
+    c_sparse = indexed_slices.IndexedSlices(
         array_ops.placeholder(dtypes.float32),
         array_ops.placeholder(dtypes.int32),
         array_ops.placeholder(dtypes.int32))
@@ -921,8 +920,8 @@ class OnlyRealGradientsTest(test_util.TensorFlowTestCase):
     x = constant_op.constant(7+3j, dtype=dtypes.complex64)
     y = math_ops.square(x)
     with self.assertRaisesRegex(
-        TypeError, r"Gradients of complex tensors must set grad_ys "
-        r"\(y\.dtype = tf\.complex64\)"):
+        TypeError, r"Gradients of complex tensors .* must set grad_ys "
+        r"\(y\.dtype = complex64\)"):
       gradients.gradients(y, x)
 
 
@@ -1024,6 +1023,17 @@ class GetDependentVariablesTest(test_util.TensorFlowTestCase):
           [input_t], [result_t])
       self.assertEqual(dependent_vars, [])
 
+  def testGetVariableByName(self):
+    with context.graph_mode():
+      init = constant_op.constant(100.0)
+      var = variable_scope.variable(init, name="a/replica_1")
+      if isinstance(var, variables.RefVariable):
+        var._variable = array_ops.identity(var, name="a")
+      else:
+        var._handle = array_ops.identity(var, name="a")
+      var2 = custom_gradient.get_variable_by_name("a")
+      self.assertEqual(var2.name, var.name)
+
   def testVariablesOutsideAndNonTrainable(self):
     with ops.Graph().as_default():
       init = constant_op.constant(100.0, shape=(5,))
@@ -1113,7 +1123,7 @@ class CustomGradientTest(test_util.TensorFlowTestCase, parameterized.TestCase):
 
   def testCustomGradientClass(self):
 
-    class Model(object):
+    class Model:
 
       @custom_gradient.custom_gradient
       def Multiply(self, x1, x2):
@@ -1492,6 +1502,50 @@ class VariablesGradientTest(test_util.TensorFlowTestCase,
     sym_jac_back, num_jac = gradient_checker_v2.compute_gradient(
         f, inputs, delta=delta)
     self.assertAllClose(num_jac, sym_jac_back, rtol=rtol, atol=atol)
+
+  def testRecomputeGradWrapped(self):
+
+    def f(x):  # pylint: disable=invalid-name
+      return 2 * x
+
+    g = custom_gradient.recompute_grad(f)
+    self.assertIs(g.__wrapped__, f)
+
+  def testRecomputeGradZeroSizeInput(self):
+
+    def F(x):
+      return 2 * x
+
+    x = array_ops.constant(())
+    grads_re = self._grad(custom_gradient.recompute_grad(F))(x)
+    grads = self._grad(F)(x)
+    self.assertAllClose(grads_re, grads)
+
+    f_graph = function.defun(F, input_signature=[tensor_spec.TensorSpec(None)])
+    grads_re = self._grad(custom_gradient.recompute_grad(f_graph))(x)
+    grads = self._grad(f_graph)(x)
+    self.assertAllClose(grads_re, grads)
+
+  def testRecomputeGradDifferentDtypesInputs(self):
+
+    def F(x1, x2):
+      return 2 * x1, 2 * x2
+
+    x1 = array_ops.constant(1, dtype=dtypes.int32)
+    x2 = array_ops.constant(1., dtype=dtypes.float32)
+    grads_re = self._grad(custom_gradient.recompute_grad(F))(x1, x2)
+    grads = self._grad(F)(x1, x2)
+    self.assertAllClose(grads_re, grads)
+
+    f_graph = function.defun(
+        F,
+        input_signature=[
+            tensor_spec.TensorSpec(None, dtype=dtypes.int32),
+            tensor_spec.TensorSpec(None, dtype=dtypes.float32),
+        ])
+    grads_re = self._grad(custom_gradient.recompute_grad(f_graph))(x1, x2)
+    grads = self._grad(f_graph)(x1, x2)
+    self.assertAllClose(grads_re, grads)
 
   @test_util.run_v2_only
   def testCustomGradientRecomputeGradHigherOrder(self):

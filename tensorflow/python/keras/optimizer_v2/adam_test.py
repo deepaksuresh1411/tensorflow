@@ -14,16 +14,13 @@
 # ==============================================================================
 """Tests for Adam."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
 from tensorflow.python.keras import combinations
 from tensorflow.python.keras import optimizer_v1
@@ -113,7 +110,7 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testSparse(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for dtype in [dtypes.half, dtypes.float32, dtypes.float64]:
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -124,11 +121,11 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
         var0 = variables.Variable(var0_np)
         var1 = variables.Variable(var1_np)
         grads0_np_indices = np.array([0, 2], dtype=np.int32)
-        grads0 = ops.IndexedSlices(
+        grads0 = indexed_slices.IndexedSlices(
             constant_op.constant(grads0_np[grads0_np_indices]),
             constant_op.constant(grads0_np_indices), constant_op.constant([3]))
         grads1_np_indices = np.array([0, 2], dtype=np.int32)
-        grads1 = ops.IndexedSlices(
+        grads1 = indexed_slices.IndexedSlices(
             constant_op.constant(grads1_np[grads1_np_indices]),
             constant_op.constant(grads1_np_indices), constant_op.constant([3]))
         opt = adam.Adam()
@@ -178,16 +175,12 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
             [[1.0], [2.0]], dtype=dtype)
         aggregated_update_var = variables.Variable(
             [[1.0], [2.0]], dtype=dtype)
-        grad_repeated_index = ops.IndexedSlices(
-            constant_op.constant(
-                [0.1, 0.1], shape=[2, 1], dtype=dtype),
-            constant_op.constant([1, 1]),
-            constant_op.constant([2, 1]))
-        grad_aggregated = ops.IndexedSlices(
-            constant_op.constant(
-                [0.2], shape=[1, 1], dtype=dtype),
-            constant_op.constant([1]),
-            constant_op.constant([2, 1]))
+        grad_repeated_index = indexed_slices.IndexedSlices(
+            constant_op.constant([0.1, 0.1], shape=[2, 1], dtype=dtype),
+            constant_op.constant([1, 1]), constant_op.constant([2, 1]))
+        grad_aggregated = indexed_slices.IndexedSlices(
+            constant_op.constant([0.2], shape=[1, 1], dtype=dtype),
+            constant_op.constant([1]), constant_op.constant([2, 1]))
         repeated_update = adam.Adam().apply_gradients(
             [(grad_repeated_index, repeated_index_update_var)])
         aggregated_update = adam.Adam().apply_gradients(
@@ -203,7 +196,7 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
 
   def doTestBasic(self, use_callable_params=False):
     for i, dtype in enumerate([dtypes.half, dtypes.float32, dtypes.float64]):
-      with self.cached_session(use_gpu=True):
+      with self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -261,7 +254,7 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
   @combinations.generate(combinations.combine(mode=["graph", "eager"]))
   def testBasicWithAmsgrad(self):
     for i, dtype in enumerate([dtypes.half, dtypes.float32, dtypes.float64]):
-      with self.cached_session(use_gpu=True):
+      with self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, v0hat, m1, v1, v1hat = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -314,11 +307,11 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
         repeated_index_update_var = variables.Variable(var0_np, dtype=dtype)
         aggregated_update_var = variables.Variable(var0_np, dtype=dtype)
         grads0_np = np.array([[0.2]], dtype=dtype.as_numpy_dtype)
-        grad_repeated_index = ops.IndexedSlices(
+        grad_repeated_index = indexed_slices.IndexedSlices(
             constant_op.constant([0.1, 0.1], shape=[2, 1], dtype=dtype),
             constant_op.constant([1, 1]), constant_op.constant([2, 1]))
-        grad_aggregated = ops.IndexedSlices(grads0_np, indices,
-                                            constant_op.constant([2, 1]))
+        grad_aggregated = indexed_slices.IndexedSlices(
+            grads0_np, indices, constant_op.constant([2, 1]))
         opt_repeated = adam.Adam(amsgrad=True)
         opt_aggregated = adam.Adam(amsgrad=True)
         if not context.executing_eagerly():
@@ -353,7 +346,7 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testBasicWithLearningRateDecay(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for i, dtype in enumerate([dtypes.half, dtypes.float32, dtypes.float64]):
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -398,7 +391,7 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testBasicWithLearningRateInverseTimeDecay(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for i, dtype in enumerate([dtypes.half, dtypes.float32, dtypes.float64]):
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -445,7 +438,7 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testTensorLearningRate(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for dtype in [dtypes.half, dtypes.float32, dtypes.float64]:
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -484,7 +477,7 @@ class AdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testSharing(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for dtype in [dtypes.half, dtypes.float32, dtypes.float64]:
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -565,7 +558,7 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testSparse(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for dtype in [dtypes.half, dtypes.float32, dtypes.float64]:
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -576,11 +569,11 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
         var0 = variables.Variable(var0_np)
         var1 = variables.Variable(var1_np)
         grads0_np_indices = np.array([0, 2], dtype=np.int32)
-        grads0 = ops.IndexedSlices(
+        grads0 = indexed_slices.IndexedSlices(
             constant_op.constant(grads0_np[grads0_np_indices]),
             constant_op.constant(grads0_np_indices), constant_op.constant([3]))
         grads1_np_indices = np.array([0, 2], dtype=np.int32)
-        grads1 = ops.IndexedSlices(
+        grads1 = indexed_slices.IndexedSlices(
             constant_op.constant(grads1_np[grads1_np_indices]),
             constant_op.constant(grads1_np_indices), constant_op.constant([3]))
         opt = adam.NonFusedAdam()
@@ -630,16 +623,12 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
             [[1.0], [2.0]], dtype=dtype)
         aggregated_update_var = variables.Variable(
             [[1.0], [2.0]], dtype=dtype)
-        grad_repeated_index = ops.IndexedSlices(
-            constant_op.constant(
-                [0.1, 0.1], shape=[2, 1], dtype=dtype),
-            constant_op.constant([1, 1]),
-            constant_op.constant([2, 1]))
-        grad_aggregated = ops.IndexedSlices(
-            constant_op.constant(
-                [0.2], shape=[1, 1], dtype=dtype),
-            constant_op.constant([1]),
-            constant_op.constant([2, 1]))
+        grad_repeated_index = indexed_slices.IndexedSlices(
+            constant_op.constant([0.1, 0.1], shape=[2, 1], dtype=dtype),
+            constant_op.constant([1, 1]), constant_op.constant([2, 1]))
+        grad_aggregated = indexed_slices.IndexedSlices(
+            constant_op.constant([0.2], shape=[1, 1], dtype=dtype),
+            constant_op.constant([1]), constant_op.constant([2, 1]))
         repeated_update = adam.NonFusedAdam().apply_gradients(
             [(grad_repeated_index, repeated_index_update_var)])
         aggregated_update = adam.NonFusedAdam().apply_gradients(
@@ -655,7 +644,7 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
 
   def doTestBasic(self, use_callable_params=False):
     for i, dtype in enumerate([dtypes.half, dtypes.float32, dtypes.float64]):
-      with self.cached_session(use_gpu=True):
+      with self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -715,7 +704,7 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
   @combinations.generate(combinations.combine(mode=["graph", "eager"]))
   def testBasicWithAmsgrad(self):
     for i, dtype in enumerate([dtypes.half, dtypes.float32, dtypes.float64]):
-      with self.cached_session(use_gpu=True):
+      with self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, v0hat, m1, v1, v1hat = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -770,11 +759,11 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
         repeated_index_update_var = variables.Variable(var0_np, dtype=dtype)
         aggregated_update_var = variables.Variable(var0_np, dtype=dtype)
         grads0_np = np.array([[0.2]], dtype=dtype.as_numpy_dtype)
-        grad_repeated_index = ops.IndexedSlices(
+        grad_repeated_index = indexed_slices.IndexedSlices(
             constant_op.constant([0.1, 0.1], shape=[2, 1], dtype=dtype),
             constant_op.constant([1, 1]), constant_op.constant([2, 1]))
-        grad_aggregated = ops.IndexedSlices(grads0_np, indices,
-                                            constant_op.constant([2, 1]))
+        grad_aggregated = indexed_slices.IndexedSlices(
+            grads0_np, indices, constant_op.constant([2, 1]))
         opt_repeated = adam.NonFusedAdam(amsgrad=True)
         opt_aggregated = adam.NonFusedAdam(amsgrad=True)
         if not context.executing_eagerly():
@@ -809,7 +798,7 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testBasicWithLearningRateDecay(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for i, dtype in enumerate([dtypes.half, dtypes.float32, dtypes.float64]):
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -854,7 +843,7 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testBasicWithLearningRateInverseTimeDecay(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for i, dtype in enumerate([dtypes.half, dtypes.float32, dtypes.float64]):
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -901,7 +890,7 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testTensorLearningRate(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for dtype in [dtypes.half, dtypes.float32, dtypes.float64]:
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)
@@ -940,7 +929,7 @@ class NonFusedAdamOptimizerTest(test.TestCase, parameterized.TestCase):
   def testSharing(self):
     # TODO(tanzheny, omalleyt): Fix test in eager mode.
     for dtype in [dtypes.half, dtypes.float32, dtypes.float64]:
-      with ops.Graph().as_default(), self.cached_session(use_gpu=True):
+      with ops.Graph().as_default(), self.cached_session():
         # Initialize variables for numpy implementation.
         m0, v0, m1, v1 = 0.0, 0.0, 0.0, 0.0
         var0_np = np.array([1.0, 2.0], dtype=dtype.as_numpy_dtype)

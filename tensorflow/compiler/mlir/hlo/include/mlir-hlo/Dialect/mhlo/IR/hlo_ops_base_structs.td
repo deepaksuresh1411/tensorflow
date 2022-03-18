@@ -16,50 +16,6 @@ limitations under the License.
 #ifndef HLO_OPS_BASE_STRUCTS
 #define HLO_OPS_BASE_STRUCTS
 
-//===----------------------------------------------------------------------===//
-// Dot dimensions enum definitions.
-//===----------------------------------------------------------------------===//
-
-def DotDimensionNumbers : StructAttr<"DotDimensionNumbers", HLO_Dialect, [
-                StructFieldAttr<"lhs_batching_dimensions",   I64ElementsAttr>,
-                StructFieldAttr<"rhs_batching_dimensions",   I64ElementsAttr>,
-                StructFieldAttr<"lhs_contracting_dimensions", I64ElementsAttr>,
-                StructFieldAttr<"rhs_contracting_dimensions", I64ElementsAttr>
-  ]> {
-  let description = "Structure of dimension information for dot product";
-}
-
-def ScatterDimensionNumbers : StructAttr<
-    "ScatterDimensionNumbers", HLO_Dialect, [
-      StructFieldAttr<"update_window_dims", I64ElementsAttr>,
-      StructFieldAttr<"inserted_window_dims", I64ElementsAttr>,
-      StructFieldAttr<"scatter_dims_to_operand_dims", I64ElementsAttr>,
-      StructFieldAttr<"index_vector_dim", I64Attr>]> {
-  let description = "Structure of dimension information for scatter";
-}
-
-def ConvDimensionNumbers : StructAttr<"ConvDimensionNumbers", HLO_Dialect, [
-  StructFieldAttr<"input_batch_dimension",I64Attr>,
-  StructFieldAttr<"input_feature_dimension", I64Attr>,
-  StructFieldAttr<"input_spatial_dimensions", I64ElementsAttr>,
-  StructFieldAttr<"kernel_input_feature_dimension", I64Attr>,
-  StructFieldAttr<"kernel_output_feature_dimension", I64Attr>,
-  StructFieldAttr<"kernel_spatial_dimensions", I64ElementsAttr>,
-  StructFieldAttr<"output_batch_dimension", I64Attr>,
-  StructFieldAttr<"output_feature_dimension", I64Attr>,
-  StructFieldAttr<"output_spatial_dimensions", I64ElementsAttr>] > {
-
-  let description = "Structure of dimension information for conv op";
-}
-
-def GatherDimensionNumbers : StructAttr<"GatherDimensionNumbers", HLO_Dialect,
-      [StructFieldAttr<"offset_dims", I64ElementsAttr>,
-      StructFieldAttr<"collapsed_slice_dims", I64ElementsAttr>,
-      StructFieldAttr<"start_index_map", I64ElementsAttr>,
-      StructFieldAttr<"index_vector_dim", I64Attr>]> {
-  let description = "Structure of dimension information for gather";
-}
-
 
 // Represents a unique identifier for each Send/Recv instruction pair or
 // optionally for collective instructions (AllReduce, CollectivePermute,
@@ -67,7 +23,7 @@ def GatherDimensionNumbers : StructAttr<"GatherDimensionNumbers", HLO_Dialect,
 def ChannelHandle : StructAttr<"ChannelHandle", HLO_Dialect, [
                 StructFieldAttr<"handle", I64Attr>,
                 StructFieldAttr<"type", I64Attr>]> {
-  let description = "two 64-bit integers 'handle' and 'type'";
+  let summary = "two 64-bit integers 'handle' and 'type'";
 }
 
 #endif // HLO_OPS_BASE_STRUCTS

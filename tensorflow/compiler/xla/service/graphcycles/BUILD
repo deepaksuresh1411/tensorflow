@@ -6,7 +6,7 @@ package(
         "//tensorflow/compiler/tf2xla:internal",
         "//tensorflow/compiler/xla:internal",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 cc_library(
@@ -43,6 +43,7 @@ tf_cc_test(
         "//tensorflow/core:lib",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "@com_google_absl//absl/container:flat_hash_set",
     ],
 )
 

@@ -145,7 +145,7 @@ PHILOX_DEVICE_INLINE void FillPhiloxRandomKernel<Distribution, false>::Run(
 
   const int32 thread_id = blockIdx.x * blockDim.x + threadIdx.x;
   const int32 total_thread_count = gridDim.x * blockDim.x;
-  int32 offset = thread_id * kGroupSize;
+  int64 offset = thread_id * kGroupSize;
   if (key != nullptr && counter != nullptr) {
     gen = GetPhiloxRandomFromCounterKeyMem(counter, key);
   }
@@ -237,7 +237,7 @@ void FillPhiloxRandom<GPUDevice, Distribution>::operator()(
   if (size == 0) return;
   const int32 block_size = d.maxGpuThreadsPerBlock();
   const int32 num_blocks =
-      std::min<int64>(
+      std::min<int64_t>(
           d.getNumGpuMultiProcessors() * d.maxGpuThreadsPerMultiProcessor(),
           size + block_size - 1) /
       block_size;

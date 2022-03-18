@@ -17,6 +17,8 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
+#include "absl/synchronization/notification.h"
+#include "absl/types/optional.h"
 #include "tensorflow/compiler/jit/defs.h"
 #include "tensorflow/compiler/jit/encapsulate_subgraphs_pass.h"
 #include "tensorflow/compiler/jit/flags.h"
@@ -26,11 +28,13 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
+#include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/compiler/xla/client/client_library.h"
 #include "tensorflow/compiler/xla/client/local_client.h"
 #include "tensorflow/compiler/xla/executable_run_options.h"
 #include "tensorflow/compiler/xla/service/compiler.h"
+#include "tensorflow/compiler/xla/service/gpu/gpu_executable_run_options.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
@@ -43,8 +47,10 @@ limitations under the License.
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/lib/monitoring/counter.h"
 #include "tensorflow/core/platform/casts.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/refcount.h"
 #include "tensorflow/core/platform/stream_executor_no_cuda.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/util/stream_executor_util.h"
@@ -64,6 +70,9 @@ namespace tensorflow {
 
 namespace {
 
+auto* xla_launch_counter = monitoring::Counter<1>::New(
+    "/tensorflow/core/xla_launch_counter",
+    "The number of times a XlaLaunch is called.", "device");
 
 // A closure describing how to run a compiled version of a TensorFlow function.
 //
@@ -140,12 +149,61 @@ class XlaExecutableClosureStore {
 
  private:
   mutex mutex_;
-  int64 key_counter_ TF_GUARDED_BY(mutex_);
+  int64_t key_counter_ TF_GUARDED_BY(mutex_);
   absl::flat_hash_map<KeyT, XlaExecutableClosure> closures_
       TF_GUARDED_BY(mutex_);
 
   TF_DISALLOW_COPY_AND_ASSIGN(XlaExecutableClosureStore);
 };
+
+se::Stream* GetStream(OpKernelContext* ctx) {
+  return ctx->op_device_context() ? ctx->op_device_context()->stream()
+                                  : nullptr;
+}
+
+XlaComputationLaunchContext GetLaunchContext(
+    const XlaPlatformInfo& platform_info, OpKernelContext* ctx,
+    xla::LocalClient* client, se::DeviceMemoryAllocator* allocator) {
+  se::Stream* stream = GetStream(ctx);
+  int device_ordinal = stream ? stream->parent()->device_ordinal()
+                              : client->default_device_ordinal();
+  XlaComputationLaunchContext launch_context(
+      client, allocator, device_ordinal,
+      /*allocate_xla_tensors=*/platform_info.is_on_xla_device(),
+      /*use_multiple_streams=*/platform_info.UseMultipleStreams());
+  return launch_context;
+}
+
+StatusOr<xla::ExecutionOutput> RunExecutable(
+    const XlaPlatformInfo& platform_info,
+    const XlaComputationLaunchContext& launch_context,
+    std::vector<xla::ExecutionInput> execution_inputs,
+    xla::ExecutableRunOptions run_options, xla::LocalExecutable* executable,
+    OpKernelContext* ctx, se::DeviceMemoryAllocator* allocator) {
+  VLOG(2) << "Executing Xla Computation.";
+  Env* env = Env::Default();
+  auto start_time = env->NowMicros();
+
+  se::Stream* stream = GetStream(ctx);
+  run_options.set_stream(GetStream(ctx));
+  run_options.set_allocator(allocator);
+  run_options.set_intra_op_thread_pool(&ctx->eigen_cpu_device());
+  run_options.set_rng_seed(GetXLARandomSeed());
+  StatusOr<xla::ExecutionOutput> execution_output;
+  bool run_synchronous =
+      !stream || platform_info.platform_id() == se::host::kHostPlatformId;
+  if (run_synchronous) {
+    execution_output =
+        executable->Run(std::move(execution_inputs), run_options);
+  } else {
+    execution_output =
+        executable->RunAsync(std::move(execution_inputs), run_options);
+  }
+
+  auto elapsed = env->NowMicros() - start_time;
+  VLOG(2) << "Elapsed time for Xla Executable Run: " << elapsed << "us";
+  return execution_output;
+}
 
 }  // namespace
 
@@ -166,8 +224,9 @@ static Status CompileToLocalExecutable(
     const XlaPlatformInfo& platform_info,
     absl::Span<const Tensor* const> inputs,
     absl::Span<VariableInfo const> variable_infos,
-    absl::Span<const int> constants, bool lazy, bool may_alias_resource_update,
-    xla::LocalClient** client,
+    absl::Span<const int> constants,
+    XlaCompilationCache::CompileMode compile_mode,
+    bool may_alias_resource_update, xla::LocalClient** client,
     const XlaCompiler::CompilationResult** compilation_result,
     xla::LocalExecutable** executable) {
   // We store information about the JIT-compiled XLA computation
@@ -181,7 +240,8 @@ static Status CompileToLocalExecutable(
   TF_RETURN_IF_ERROR(rm->LookupOrCreate<XlaCompilationCache>(
       rm->default_container(), "xla_cache", &cache,
       [&](XlaCompilationCache** cache) {
-        return BuildXlaCompilationCache(ctx->device(), platform_info, cache);
+        return BuildXlaCompilationCache(ctx->device(), ctx->function_library(),
+                                        platform_info, cache);
       }));
   // Hold the reference to the JIT during evaluation. (We could probably
   // free it sooner because the ResourceMgr will retain a reference, but
@@ -190,11 +250,9 @@ static Status CompileToLocalExecutable(
 
   *client = static_cast<xla::LocalClient*>(cache->client());
 
-  absl::optional<se::TfAllocatorAdapter> tf_allocator_adapter;
-  XlaCompiler::Options options = GenerateCompilerOptions(
-      *cache, *ctx->function_library(), ctx->device(),
-      ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr,
-      platform_info, has_ref_vars, &tf_allocator_adapter);
+  XlaCompiler::Options options =
+      GenerateCompilerOptions(*cache, *ctx->function_library(), ctx->device(),
+                              GetStream(ctx), platform_info, has_ref_vars);
 
   XlaCompiler::CompileOptions compile_options;
   compile_options.is_entry_computation = true;
@@ -202,23 +260,22 @@ static Status CompileToLocalExecutable(
   // rather than a one-element tuple.
   compile_options.always_return_tuple = false;
   compile_options.alias_resource_update = !has_ref_vars &&
-                                          !platform_info.is_on_xla_device() &&
                                           may_alias_resource_update;
 
-  xla::StatusOr<std::vector<XlaCompiler::Argument>> args =
+  StatusOr<std::vector<XlaCompiler::Argument>> args =
       XlaComputationLaunchContext::BuildXlaCompilerArguments(
           constants, inputs, variable_infos,
           static_cast<Device*>(ctx->device()));
   TF_RETURN_IF_ERROR(args.status());
-  return cache->Compile(options, function, *args, compile_options,
-                        lazy ? XlaCompilationCache::CompileMode::kLazy
-                             : XlaCompilationCache::CompileMode::kStrict,
+  return cache->Compile(options, function, *args, compile_options, compile_mode,
                         compilation_result, executable);
 }
 
 void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
   VLOG(1) << "XlaLocalLaunchOpBase::Compute "
           << Canonicalize(function_.name(), AttrSlice(&function_.attr()));
+  xla_launch_counter->GetCell(platform_info_.device_type().type_string())
+      ->IncrementBy(1);
 
   std::vector<const Tensor*> inputs = InputsFromContext(ctx);
   xla::LocalClient* client;
@@ -233,7 +290,7 @@ void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
     OP_REQUIRES_OK(ctx, LockVariables(absl::MakeSpan(variable_infos)));
     Status s = CompileToLocalExecutable(
         ctx, function_, /*has_ref_vars=*/has_ref_vars_, platform_info_, inputs,
-        variable_infos, constants_, /*lazy=*/false,
+        variable_infos, constants_, XlaCompilationCache::CompileMode::kStrict,
         /*may_alias_resource_update=*/true, &client, &compilation_result,
         &executable);
     OP_REQUIRES_OK(ctx, s);
@@ -243,51 +300,43 @@ void XlaLocalLaunchBase::Compute(OpKernelContext* ctx) {
   for (int i = 0; i < resources_.size(); i++) {
     resource_var_ptrs[resources_[i]] = variable_infos[i].var()->tensor();
   }
+  std::shared_ptr<se::DeviceMemoryAllocator> allocator =
+      GetAllocator(ctx->device(), GetStream(ctx), platform_info_);
+  XlaComputationLaunchContext launch_context =
+      GetLaunchContext(platform_info_, ctx, client, allocator.get());
 
-  se::Stream* stream =
-      ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr;
-
-  absl::optional<se::TfAllocatorAdapter> tf_allocator_adapter;
-  se::DeviceMemoryAllocator* allocator = GetAllocator(
-      &tf_allocator_adapter, ctx->device(),
-      ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr,
-      platform_info_);
-  int device_ordinal = stream ? stream->parent()->device_ordinal()
-                              : client->default_device_ordinal();
-  XlaComputationLaunchContext launch_context(
-      client, allocator, device_ordinal,
-      /*allocate_xla_tensors=*/platform_info_.is_on_xla_device(),
-      platform_info_.UseMultipleStreams());
   const xla::HloInputOutputAliasConfig& input_output_alias =
       executable->executable()->module().input_output_alias_config();
-  xla::StatusOr<std::vector<xla::ExecutionInput>> execution_inputs =
+  StatusOr<std::vector<xla::ExecutionInput>> execution_inputs =
       launch_context.PopulateInputs(ctx, compilation_result, resource_var_ptrs,
                                     /*missing_ctx_input_prefix=*/0,
                                     input_output_alias);
   OP_REQUIRES_OK(ctx, execution_inputs.status());
 
   // Execute the computation.
-  VLOG(2) << "Executing computation.";
+  xla::gpu::GpuExecutableRunOptions gpu_options;
+  xla::DeviceAssignment device_assignment;
   xla::ExecutableRunOptions run_options;
-  run_options.set_stream(stream);
-  run_options.set_allocator(allocator);
-  run_options.set_intra_op_thread_pool(&ctx->eigen_cpu_device());
-  run_options.set_rng_seed(GetXLARandomSeed());
-  Env* env = Env::Default();
-  auto start_time = env->NowMicros();
-
-  xla::StatusOr<xla::ExecutionOutput> execution_output;
-  if (!stream || platform_info_.platform_id() == se::host::kHostPlatformId) {
-    execution_output =
-        executable->Run(std::move(*execution_inputs), run_options);
+  if (compilation_result->collective_info.has_value()) {
+    OP_REQUIRES_OK(ctx, ResolveDeviceAssignment(
+                            ctx, *compilation_result->collective_info,
+                            run_options, device_assignment, gpu_options));
   } else {
-    execution_output =
-        executable->RunAsync(std::move(*execution_inputs), run_options);
+    VLOG(2) << "No collective info provided: skipping device assignment";
   }
+
+  // Hardcode run id to always be zero: TF distributed strategy differentiates
+  // between subsequent runs using dependency edges.
+  // This is safe, as only TF dist-strat can produce distributed ops, and we can
+  // rely on TF dist-strat invariants.
+  xla::RunId run_id(0);
+  run_options.set_run_id(run_id);
+
+  StatusOr<xla::ExecutionOutput> execution_output = RunExecutable(
+      platform_info_, launch_context, std::move(*execution_inputs), run_options,
+      executable, ctx, allocator.get());
   OP_REQUIRES(ctx, execution_output.ok(), execution_output.status());
 
-  auto elapsed = env->NowMicros() - start_time;
-  VLOG(2) << "Elapsed time: " << elapsed << "us";
   OP_REQUIRES_OK(
       ctx, launch_context.PopulateOutputs(
                ctx, compilation_result, execution_output->ConsumeResult(),
@@ -381,6 +430,14 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
     mutex_lock guard(cannot_compile_cluster_mu_);
     cannot_compile_cluster = cannot_compile_cluster_;
   }
+  XlaCompilationCache::CompileMode compile_mode = [&] {
+    if (must_compile_) {
+      return XlaCompilationCache::CompileMode::kStrict;
+    }
+    return GetXlaOpsCommonFlags().tf_xla_async_compilation
+               ? XlaCompilationCache::CompileMode::kAsync
+               : XlaCompilationCache::CompileMode::kLazy;
+  }();
 
   if (GetXlaOpsCommonFlags().tf_xla_always_defer_compilation ||
       cannot_compile_cluster) {
@@ -396,12 +453,12 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
     // unlocking them in XlaRun may lead to deadlocks.
     Status status = CompileToLocalExecutable(
         ctx, function_, has_ref_vars_, platform_info_, inputs, variable_infos,
-        constants_,
-        /*lazy=*/!must_compile_,
-        /*may_alias_resource_update=*/false, &client, &kernel, &executable);
+        constants_, compile_mode, /*may_alias_resource_update=*/false, &client,
+        &kernel, &executable);
     OP_REQUIRES_OK(ctx, SnapshotResourceVariables(ctx, resources_,
                                                   variable_infos, &variables));
-    if (must_compile_ || status.code() != error::UNIMPLEMENTED) {
+    if (compile_mode != XlaCompilationCache::CompileMode::kLazy ||
+        status.code() != error::UNIMPLEMENTED) {
       OP_REQUIRES_OK(ctx, status);
     }
 
@@ -423,6 +480,7 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
   host_alloc_attrs.set_on_host(true);
   Allocator* cpu_allocator = ctx->device()->GetAllocator(host_alloc_attrs);
 
+  // Async compilation returns nullptr executable without an error.
   if (!executable) {
     DCHECK(!must_compile_);
     Tensor compilation_key(cpu_allocator, DT_STRING, TensorShape({}));
@@ -462,27 +520,17 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
 
   XlaExecutableClosure closure =
       XlaExecutableClosureStore::Global()->Consume(key);
-
-  absl::optional<se::TfAllocatorAdapter> tf_allocator_adapter;
-  se::DeviceMemoryAllocator* allocator = GetAllocator(
-      &tf_allocator_adapter, ctx->device(),
-      ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr,
-      platform_info_);
-  se::Stream* stream =
-      ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr;
-  int device_ordinal = stream ? stream->parent()->device_ordinal()
-                              : closure.client()->default_device_ordinal();
-  XlaComputationLaunchContext launch_context(
-      closure.client(), allocator, device_ordinal,
-      /*allocate_xla_tensors=*/platform_info_.is_on_xla_device(),
-      /*use_multiple_streams=*/platform_info_.UseMultipleStreams());
+  std::shared_ptr<se::DeviceMemoryAllocator> allocator =
+      GetAllocator(ctx->device(), GetStream(ctx), platform_info_);
+  XlaComputationLaunchContext launch_context =
+      GetLaunchContext(platform_info_, ctx, closure.client(), allocator.get());
 
   // We're missing the must-be-constant inputs, tell `PopulateInputs`
   // about this.  We don't actually need these inputs because they've
   // already been baked into the compiled kernel.
   const xla::HloInputOutputAliasConfig& input_output_alias =
       closure.executable()->executable()->module().input_output_alias_config();
-  xla::StatusOr<std::vector<xla::ExecutionInput>> execution_inputs;
+  StatusOr<std::vector<xla::ExecutionInput>> execution_inputs;
   std::map<int, const Tensor*> snapshot_ptrs;
   {
     tensorflow::profiler::TraceMe hlo_module_activity(
@@ -505,26 +553,10 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   }
 
   xla::ExecutableRunOptions run_options;
-  run_options.set_stream(stream);
-  run_options.set_allocator(allocator);
-  run_options.set_intra_op_thread_pool(&ctx->eigen_cpu_device());
-  run_options.set_rng_seed(GetXLARandomSeed());
-  Env* env = Env::Default();
-  auto start_time = env->NowMicros();
-
-  xla::StatusOr<xla::ExecutionOutput> execution_output;
-  if (!stream || platform_info_.platform_id() == se::host::kHostPlatformId) {
-    execution_output =
-        closure.executable()->Run(std::move(*execution_inputs), run_options);
-  } else {
-    execution_output = closure.executable()->RunAsync(
-        std::move(*execution_inputs), run_options);
-  }
+  StatusOr<xla::ExecutionOutput> execution_output = RunExecutable(
+      platform_info_, launch_context, std::move(*execution_inputs), run_options,
+      closure.executable(), ctx, allocator.get());
   OP_REQUIRES(ctx, execution_output.ok(), execution_output.status());
-
-  auto elapsed = env->NowMicros() - start_time;
-  VLOG(2) << "Elapsed time in computation: " << elapsed << "us";
-
 
   tensorflow::profiler::TraceMe hlo_module_activity(
       [&] {
@@ -532,7 +564,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       },
       tensorflow::profiler::TraceMeLevel::kInfo);
 
-  xla::StatusOr<std::vector<VariableInfo>> variable_infos = GatherVariableInfo(
+  StatusOr<std::vector<VariableInfo>> variable_infos = GatherVariableInfo(
       ctx, *closure.compilation_result(), closure.num_constant_args());
   OP_REQUIRES_OK(ctx, variable_infos.status());
   OP_REQUIRES_OK(ctx, LockVariables(absl::MakeSpan(*variable_infos)));

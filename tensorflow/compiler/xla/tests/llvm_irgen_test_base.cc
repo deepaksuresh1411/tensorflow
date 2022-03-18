@@ -25,20 +25,6 @@ limitations under the License.
 
 namespace xla {
 
-namespace {
-
-void RemoveDummyMetadataNames(HloModule* module) {
-  for (xla::HloComputation* computation : module->computations()) {
-    for (xla::HloInstruction* instruction : computation->instructions()) {
-      if (absl::StartsWith(instruction->metadata().op_name(), "DUMMY")) {
-        instruction->set_metadata_op_name("");
-      }
-    }
-  }
-}
-
-}  // namespace
-
 void LlvmIrGenTestBase::SetIrHook(bool match_optimized_ir) {
   auto llvm_compiler = GetLLVMCompiler();
   using std::placeholders::_1;
@@ -61,7 +47,7 @@ void LlvmIrGenTestBase::ResetIrHook() {
 }
 
 void LlvmIrGenTestBase::CompileAndVerifyIr(
-    std::unique_ptr<HloModule> hlo_module, const string& pattern,
+    std::unique_ptr<HloModule> hlo_module, const std::string& pattern,
     bool match_optimized_ir) {
   SetIrHook(match_optimized_ir);
   Status status = CompileToExecutable(std::move(hlo_module)).status();
@@ -73,8 +59,8 @@ void LlvmIrGenTestBase::CompileAndVerifyIr(
   EXPECT_TRUE(filecheck_result.ValueOrDie()) << "Full IR: " << ir_;
 }
 
-void LlvmIrGenTestBase::CompileAndVerifyIr(const string& hlo_text,
-                                           const string& expected_llvm_ir,
+void LlvmIrGenTestBase::CompileAndVerifyIr(const std::string& hlo_text,
+                                           const std::string& expected_llvm_ir,
                                            bool match_optimized_ir) {
   HloModuleConfig config;
   config.set_debug_options(GetDebugOptionsForTest());
@@ -85,7 +71,7 @@ void LlvmIrGenTestBase::CompileAndVerifyIr(const string& hlo_text,
 
 void LlvmIrGenTestBase::CompileAheadOfTimeAndVerifyIr(
     std::unique_ptr<HloModule> hlo_module, const AotCompilationOptions& options,
-    const string& pattern, bool match_optimized_ir) {
+    const std::string& pattern, bool match_optimized_ir) {
   SetIrHook(match_optimized_ir);
   Status status =
       CompileToAotCompilationResult(std::move(hlo_module), options).status();
@@ -102,7 +88,6 @@ void LlvmIrGenTestBase::MatchOptimizedHlo(absl::string_view hlo,
                                           bool print_operand_shape) {
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> optimized_module,
                           GetOptimizedModule(hlo));
-  RemoveDummyMetadataNames(optimized_module.get());
   HloPrintOptions print_opts;
   print_opts.set_print_operand_shape(print_operand_shape);
   StatusOr<bool> filecheck_result =
@@ -118,6 +103,13 @@ StatusOr<std::unique_ptr<HloModule>> LlvmIrGenTestBase::GetOptimizedModule(
       ParseAndReturnVerifiedModule(hlo, GetModuleConfigForTest()));
   return backend().compiler()->RunHloPasses(
       std::move(module), backend().default_stream_executor(),
+      backend().default_stream_executor()->GetAllocator());
+}
+
+StatusOr<std::unique_ptr<HloModule>> LlvmIrGenTestBase::GetOptimizedModule(
+    std::unique_ptr<HloModule> hlo_module) {
+  return backend().compiler()->RunHloPasses(
+      std::move(hlo_module), backend().default_stream_executor(),
       backend().default_stream_executor()->GetAllocator());
 }
 

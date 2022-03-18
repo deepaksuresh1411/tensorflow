@@ -14,13 +14,10 @@
 # ==============================================================================
 """Functional tests for tensor_util."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import contextlib
 import sys
 
+from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python.framework import constant_op
@@ -41,7 +38,7 @@ from tensorflow.python.platform import test
 
 
 @test_util.run_all_in_graph_and_eager_modes
-class TensorUtilTest(test.TestCase):
+class TensorUtilTest(test.TestCase, parameterized.TestCase):
 
   def testFloat(self):
     value = 10.0
@@ -318,38 +315,42 @@ class TensorUtilTest(test.TestCase):
     self.assertEqual(np.int32, a.dtype)
     self.assertAllClose(np.array([[10, 20], [30, 40]], dtype=np.int32), a)
 
-  def testIntTypes(self):
-    for dtype, nptype in [(dtypes.int32, np.int32),
-                          (dtypes.uint8, np.uint8),
-                          (dtypes.uint16, np.uint16),
-                          (dtypes.int16, np.int16),
-                          (dtypes.int8, np.int8)]:
-      # Test with array.
-      t = tensor_util.make_tensor_proto([10, 20, 30], dtype=dtype)
-      self.assertEqual(dtype, t.dtype)
-      self.assertProtoEquals("dim { size: 3 }", t.tensor_shape)
-      a = tensor_util.MakeNdarray(t)
-      self.assertEqual(nptype, a.dtype)
-      self.assertAllClose(np.array([10, 20, 30], dtype=nptype), a)
-      # Test with ndarray.
-      t = tensor_util.make_tensor_proto(np.array([10, 20, 30], dtype=nptype))
-      self.assertEqual(dtype, t.dtype)
-      self.assertProtoEquals("dim { size: 3 }", t.tensor_shape)
-      a = tensor_util.MakeNdarray(t)
-      self.assertEqual(nptype, a.dtype)
-      self.assertAllClose(np.array([10, 20, 30], dtype=nptype), a)
+  @parameterized.named_parameters(
+      ("_int8", dtypes.int8, np.int8), ("_int16", dtypes.int16, np.int16),
+      ("_int32", dtypes.int32, np.int32), ("_int64", dtypes.int64, np.int64),
+      ("_uint8", dtypes.uint8, np.uint8), ("_uint16", dtypes.uint16, np.uint16),
+      ("_uint32", dtypes.uint32, np.uint32),
+      ("_uint64", dtypes.uint64, np.uint64))
+  def testIntTypes(self, dtype, nptype):
+    # Test with array.
+    t = tensor_util.make_tensor_proto([10, 20, 30], dtype=dtype)
+    self.assertEqual(dtype, t.dtype)
+    self.assertProtoEquals("dim { size: 3 }", t.tensor_shape)
+    a = tensor_util.MakeNdarray(t)
+    self.assertEqual(nptype, a.dtype)
+    self.assertAllClose(np.array([10, 20, 30], dtype=nptype), a)
+    # Test with ndarray.
+    t = tensor_util.make_tensor_proto(np.array([10, 20, 30], dtype=nptype))
+    self.assertEqual(dtype, t.dtype)
+    self.assertProtoEquals("dim { size: 3 }", t.tensor_shape)
+    a = tensor_util.MakeNdarray(t)
+    self.assertEqual(nptype, a.dtype)
+    self.assertAllClose(np.array([10, 20, 30], dtype=nptype), a)
 
-  def testIntTypesWithImplicitRepeat(self):
-    for dtype, nptype in [(dtypes.int64, np.int64), (dtypes.int32, np.int32),
-                          (dtypes.uint8, np.uint8), (dtypes.uint16, np.uint16),
-                          (dtypes.int16, np.int16), (dtypes.int8, np.int8)]:
-      self.assertAllEqual(
-          np.array([[10, 11, 12, 12], [12, 12, 12, 12], [12, 12, 12, 12]],
-                   dtype=nptype),
-          tensor_util.MakeNdarray(
-              tensor_util.make_tensor_proto([10, 11, 12],
-                                            shape=[3, 4],
-                                            dtype=dtype)))
+  @parameterized.named_parameters(
+      ("_int8", dtypes.int8, np.int8), ("_int16", dtypes.int16, np.int16),
+      ("_int32", dtypes.int32, np.int32), ("_int64", dtypes.int64, np.int64),
+      ("_uint8", dtypes.uint8, np.uint8), ("_uint16", dtypes.uint16, np.uint16),
+      ("_uint32", dtypes.uint32, np.uint32),
+      ("_uint64", dtypes.uint64, np.uint64))
+  def testIntTypesWithImplicitRepeat(self, dtype, nptype):
+    self.assertAllEqual(
+        np.array([[10, 11, 12, 12], [12, 12, 12, 12], [12, 12, 12, 12]],
+                 dtype=nptype),
+        tensor_util.MakeNdarray(
+            tensor_util.make_tensor_proto([10, 11, 12],
+                                          shape=[3, 4],
+                                          dtype=dtype)))
 
   def testIntMixedWithDimension(self):
     # Github issue: 11974
@@ -362,53 +363,73 @@ class TensorUtilTest(test.TestCase):
     self.assertEqual(nptype, a.dtype)
     self.assertAllClose(np.array([10, 20, 30], dtype=nptype), a)
 
-  def testLong(self):
-    t = tensor_util.make_tensor_proto(10, dtype=dtypes.int64)
-    self.assertProtoEquals("""
-      dtype: DT_INT64
+  @parameterized.named_parameters(
+      ("_int64", dtypes.int64, np.int64, "DT_INT64", "int64_val"),
+      ("_uint64", dtypes.uint64, np.uint64, "DT_UINT64", "uint64_val"))
+  def testLong(self, dtype, nptype, proto_dtype, proto_value_name):
+    t = tensor_util.make_tensor_proto(10, dtype=dtype)
+    self.assertProtoEquals(
+        """
+      dtype: %s
       tensor_shape {}
-      int64_val: 10
-      """, t)
+      %s: 10
+    """ % (proto_dtype, proto_value_name), t)
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.int64, a.dtype)
-    self.assertAllClose(np.array(10, dtype=np.int64), a)
+    self.assertEqual(nptype, a.dtype)
+    self.assertAllClose(np.array(10, dtype=nptype), a)
 
-  def testLongN(self):
-    t = tensor_util.make_tensor_proto(
-        [10, 20, 30], shape=[1, 3], dtype=dtypes.int64)
+  @parameterized.named_parameters(
+      ("_int64", dtypes.int64, np.int64, "DT_INT64"),
+      ("_uint64", dtypes.uint64, np.uint64, "DT_UINT64"))
+  def testLongN(self, dtype, nptype, proto_dtype):
+    t = tensor_util.make_tensor_proto([10, 20, 30], shape=[1, 3], dtype=dtype)
     if sys.byteorder == "big":
-      self.assertProtoEquals(r"""
-        dtype: DT_INT64
+      # pylint: disable=line-too-long
+      self.assertProtoEquals(
+          r"""
+        dtype: %s
         tensor_shape { dim { size: 1 } dim { size: 3 } }
         tensor_content: "\000\000\000\000\000\000\000\n\000\000\000\000\000\000\000\024\000\000\000\000\000\000\000\036"
-        """, t)
+        """ % proto_dtype, t)
+      # pylint: enable=line-too-long
     else:
-      self.assertProtoEquals(r"""
-        dtype: DT_INT64
+      # pylint: disable=line-too-long
+      self.assertProtoEquals(
+          r"""
+        dtype: %s
         tensor_shape { dim { size: 1 } dim { size: 3 } }
         tensor_content: "\n\000\000\000\000\000\000\000\024\000\000\000\000\000\000\000\036\000\000\000\000\000\000\000"
-        """, t)
+        """ % proto_dtype, t)
+      # pylint: enable=line-too-long
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.int64, a.dtype)
-    self.assertAllClose(np.array([[10, 20, 30]], dtype=np.int64), a)
+    self.assertEqual(nptype, a.dtype)
+    self.assertAllClose(np.array([[10, 20, 30]], dtype=nptype), a)
 
-  def testLongNpArray(self):
-    t = tensor_util.make_tensor_proto(np.array([10, 20, 30]))
+  @parameterized.named_parameters(("_int64", np.int64, "DT_INT64"),
+                                  ("_uint64", np.uint64, "DT_UINT64"))
+  def testLongNpArray(self, nptype, proto_dtype):
+    t = tensor_util.make_tensor_proto(np.array([10, 20, 30], dtype=nptype))
     if sys.byteorder == "big":
-      self.assertProtoEquals(r"""
-        dtype: DT_INT64
+      # pylint: disable=line-too-long
+      self.assertProtoEquals(
+          r"""
+        dtype: %s
         tensor_shape { dim { size: 3 } }
         tensor_content: "\000\000\000\000\000\000\000\n\000\000\000\000\000\000\000\024\000\000\000\000\000\000\000\036"
-        """, t)
+        """ % proto_dtype, t)
+      # pylint: enable=line-too-long
     else:
-      self.assertProtoEquals(r"""
-        dtype: DT_INT64
+      # pylint: disable=line-too-long
+      self.assertProtoEquals(
+          r"""
+        dtype: %s
         tensor_shape { dim { size: 3 } }
         tensor_content: "\n\000\000\000\000\000\000\000\024\000\000\000\000\000\000\000\036\000\000\000\000\000\000\000"
-        """, t)
+        """ % proto_dtype, t)
+      # pylint: enable=line-too-long
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.int64, a.dtype)
-    self.assertAllClose(np.array([10, 20, 30], dtype=np.int64), a)
+    self.assertEqual(nptype, a.dtype)
+    self.assertAllClose(np.array([10, 20, 30], dtype=nptype), a)
 
   def testQuantizedTypes(self):
     # Test with array.
@@ -493,7 +514,7 @@ class TensorUtilTest(test.TestCase):
       string_val: "foo"
       """, t)
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.object, a.dtype)
+    self.assertEqual(np.object_, a.dtype)
     self.assertEqual([b"foo"], a)
 
   def testStringWithImplicitRepeat(self):
@@ -502,7 +523,7 @@ class TensorUtilTest(test.TestCase):
     self.assertAllEqual(
         np.array([[b"f", b"g", b"g", b"g"], [b"g", b"g", b"g", b"g"],
                   [b"g", b"g", b"g", b"g"]],
-                 dtype=np.object), a)
+                 dtype=np.object_), a)
 
   def testStringN(self):
     t = tensor_util.make_tensor_proto([b"foo", b"bar", b"baz"], shape=[1, 3])
@@ -514,7 +535,7 @@ class TensorUtilTest(test.TestCase):
       string_val: "baz"
       """, t)
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.object, a.dtype)
+    self.assertEqual(np.object_, a.dtype)
     self.assertAllEqual(np.array([[b"foo", b"bar", b"baz"]]), a)
 
   def testStringNpArray(self):
@@ -529,14 +550,15 @@ class TensorUtilTest(test.TestCase):
       string_val: "abcd"
       """, t)
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.object, a.dtype)
+    self.assertEqual(np.object_, a.dtype)
     self.assertAllEqual(np.array([[b"a", b"ab"], [b"abc", b"abcd"]]), a)
 
   def testArrayMethod(self):
 
     class Wrapper(object):
 
-      def __array__(self):
+      def __array__(self, dtype=None):
+        del dtype
         return np.array([b"foo", b"bar", b"baz"])
 
     t = tensor_util.make_tensor_proto(Wrapper(), shape=[1, 3])
@@ -548,16 +570,19 @@ class TensorUtilTest(test.TestCase):
       string_val: "baz"
       """, t)
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.object, a.dtype)
+    self.assertEqual(np.object_, a.dtype)
     self.assertAllEqual(np.array([[b"foo", b"bar", b"baz"]]), a)
 
   def testArrayInterface(self):
 
     class Wrapper(object):
 
+      def __init__(self):
+        self.a = np.array([b"foo", b"bar", b"baz"])
+
       @property
       def __array_interface__(self):
-        return np.array([b"foo", b"bar", b"baz"]).__array_interface__
+        return self.a.__array_interface__
 
     t = tensor_util.make_tensor_proto(Wrapper(), shape=[1, 3])
     self.assertProtoEquals("""
@@ -568,7 +593,7 @@ class TensorUtilTest(test.TestCase):
       string_val: "baz"
       """, t)
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.object, a.dtype)
+    self.assertEqual(np.object_, a.dtype)
     self.assertAllEqual(np.array([[b"foo", b"bar", b"baz"]]), a)
 
   def testStringTuple(self):
@@ -582,7 +607,7 @@ class TensorUtilTest(test.TestCase):
       string_val: "abcd"
       """, t)
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.object, a.dtype)
+    self.assertEqual(np.object_, a.dtype)
     self.assertAllEqual(np.array((b"a", b"ab", b"abc", b"abcd")), a)
 
   def testStringNestedTuple(self):
@@ -596,7 +621,7 @@ class TensorUtilTest(test.TestCase):
       string_val: "abcd"
       """, t)
     a = tensor_util.MakeNdarray(t)
-    self.assertEqual(np.object, a.dtype)
+    self.assertEqual(np.object_, a.dtype)
     self.assertAllEqual(np.array(((b"a", b"ab"), (b"abc", b"abcd"))), a)
 
   def testComplex64(self):
@@ -737,7 +762,7 @@ class TensorUtilTest(test.TestCase):
 
     # Validate the helpful error message when trying to convert an
     # unconvertible list as strings.
-    with self.assertRaisesRegex(TypeError, "Failed to convert object"):
+    with self.assertRaisesRegex(TypeError, "Failed to convert elements"):
       tensor_util.make_tensor_proto([tensor_shape.Dimension(1)])
 
   def testTensorShapeVerification(self):
@@ -778,32 +803,32 @@ class IsTensorTest(test.TestCase):
   def testConstantTensor(self):
     np_val = np.random.rand(3).astype(np.int32)
     tf_val = constant_op.constant(np_val)
-    self.assertFalse(tensor_util.is_tensor(np_val))
-    self.assertTrue(tensor_util.is_tensor(tf_val))
+    self.assertFalse(tensor_util.is_tf_type(np_val))
+    self.assertTrue(tensor_util.is_tf_type(tf_val))
 
   def testRaggedTensor(self):
     rt = ragged_factory_ops.constant([[1, 2], [3]])
     rt_value = self.evaluate(rt)
-    self.assertTrue(tensor_util.is_tensor(rt))
-    self.assertFalse(tensor_util.is_tensor(rt_value))
+    self.assertTrue(tensor_util.is_tf_type(rt))
+    self.assertFalse(tensor_util.is_tf_type(rt_value))
 
   def testSparseTensor(self):
     st = sparse_tensor.SparseTensor([[1, 2]], [3], [10, 10])
     st_value = self.evaluate(st)
-    self.assertTrue(tensor_util.is_tensor(st))
-    self.assertFalse(tensor_util.is_tensor(st_value))
+    self.assertTrue(tensor_util.is_tf_type(st))
+    self.assertFalse(tensor_util.is_tf_type(st_value))
 
   def testIndexedSlices(self):
     x = indexed_slices.IndexedSlices(
         constant_op.constant([1, 2, 3]), constant_op.constant([10, 20, 30]))
     x_value = indexed_slices.IndexedSlicesValue(
         np.array([1, 2, 3]), np.array([10, 20, 30]), np.array([100]))
-    self.assertTrue(tensor_util.is_tensor(x))
-    self.assertFalse(tensor_util.is_tensor(x_value))
+    self.assertTrue(tensor_util.is_tf_type(x))
+    self.assertFalse(tensor_util.is_tf_type(x_value))
 
   def testVariable(self):
     v = variables.Variable([1, 2, 3])
-    self.assertTrue(tensor_util.is_tensor(v))
+    self.assertTrue(tensor_util.is_tf_type(v))
 
 
 class ConstantValueTest(test.TestCase):

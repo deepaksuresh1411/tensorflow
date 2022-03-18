@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/hlo_dataflow_analysis.h"
 
+#include <string>
+
 #include "tensorflow/compiler/xla/literal.h"
 #include "tensorflow/compiler/xla/service/flatten_call_graph.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
@@ -60,15 +62,10 @@ class HloDataflowAnalysisTest : public HloTestBase,
   }
 
   // Return a vector of the HloValues at the given program position.
-  std::vector<HloValue> HloValuesAt(const HloInstruction* instruction,
-                                    const ShapeIndex& index = {}) {
+  const std::vector<const HloValue*>& HloValuesAt(
+      const HloInstruction* instruction, const ShapeIndex& index = {}) {
     CHECK(analysis_ != nullptr);
-    std::vector<HloValue> values;
-    for (const HloValue* value :
-         analysis_->GetValueSet(instruction, index).values()) {
-      values.push_back(*value);
-    }
-    return values;
+    return analysis_->GetValueSet(instruction, index).values();
   }
 
   // Returns true if the top-level values for instructions 'a' and 'b' may
@@ -132,11 +129,11 @@ TEST_P(HloDataflowAnalysisTest, BinaryOperation) {
               UnorderedElementsAre(HloPosition{add, {}}));
 
   // Verify the uses of the values.
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).GetUses(),
               UnorderedElementsAre(HloUse{add, 0, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).GetUses(),
               UnorderedElementsAre(HloUse{add, 1, {}}));
-  EXPECT_TRUE(analysis.GetValueDefinedAt(add).uses().empty());
+  EXPECT_TRUE(analysis.GetValueDefinedAt(add).GetUses().empty());
 
   // Verify liveout values from the module.
   EXPECT_FALSE(analysis.GetValueDefinedAt(constant1).live_out_of_module());
@@ -191,11 +188,11 @@ TEST_P(HloDataflowAnalysisTest, TupleAndGtes) {
 
   // Verify uses. Of interest is that a GetTupleElement instruction is only a
   // use of the top-level value in the tuple operand.
-  EXPECT_THAT(analysis.GetValueDefinedAt(param0).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(param0).GetUses(),
               UnorderedElementsAre(HloUse{add, 0, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(param1).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(param1).GetUses(),
               UnorderedElementsAre(HloUse{add, 1, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(tuple, /*index=*/{}).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(tuple, /*index=*/{}).GetUses(),
               UnorderedElementsAre(HloUse{gte0, 0, {}}, HloUse{gte1, 0, {}}));
   EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_module());
 }
@@ -233,14 +230,14 @@ TEST_P(HloDataflowAnalysisTest, NestedTuple) {
           HloPosition{gte_out, {}}));
   // Constant values should have only a single use, which is the root of the
   // computation.
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant1, /*index=*/{}).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1, /*index=*/{}).GetUses(),
               UnorderedElementsAre(HloUse{gte_out, 0, {0}}));
-  EXPECT_TRUE(analysis.GetValueDefinedAt(constant2).uses().empty());
+  EXPECT_TRUE(analysis.GetValueDefinedAt(constant2).GetUses().empty());
 
   // The top-level tuple values are used in GTE instructions.
-  EXPECT_THAT(analysis.GetValueDefinedAt(tuple, /*index=*/{}).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(tuple, /*index=*/{}).GetUses(),
               UnorderedElementsAre(HloUse{gte_out, 0, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(nested_tuple, /*index=*/{}).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(nested_tuple, /*index=*/{}).GetUses(),
               UnorderedElementsAre(HloUse{gte_tuple, 0, {}}));
 
   EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).live_out_of_module());
@@ -294,9 +291,9 @@ TEST_P(HloDataflowAnalysisTest, SingleCall) {
             analysis.GetValueDefinedAt(constant2));
   EXPECT_EQ(analysis.GetUniqueValueAt(call), analysis.GetValueDefinedAt(add));
 
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).GetUses(),
               UnorderedElementsAre(HloUse{call, 0, {}}, HloUse{add, 0, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).GetUses(),
               UnorderedElementsAre(HloUse{call, 1, {}}, HloUse{add, 1, {}}));
 
   EXPECT_TRUE(analysis.GetValueDefinedAt(add).live_out_of_module());
@@ -358,11 +355,11 @@ TEST_P(HloDataflowAnalysisTest, NestedCalls) {
   // Verify that the uses of the constants are properly swizzled by parameter
   // permutation in nested_call.
   EXPECT_THAT(
-      analysis.GetValueDefinedAt(constant1).uses(),
+      analysis.GetValueDefinedAt(constant1).GetUses(),
       UnorderedElementsAre(HloUse{call, 0, {}}, HloUse{nested_call, 1, {}},
                            HloUse{add, 1, {}}));
   EXPECT_THAT(
-      analysis.GetValueDefinedAt(constant2).uses(),
+      analysis.GetValueDefinedAt(constant2).GetUses(),
       UnorderedElementsAre(HloUse{call, 1, {}}, HloUse{nested_call, 0, {}},
                            HloUse{add, 0, {}}));
 
@@ -445,7 +442,7 @@ TEST_P(HloDataflowAnalysisTest, SingleWhile) {
     EXPECT_TRUE(analysis.GetValueDefinedAt(cond_param, /*index=*/{1}).is_phi());
 
     EXPECT_THAT(
-        analysis.GetValueDefinedAt(constant1).uses(),
+        analysis.GetValueDefinedAt(constant1).GetUses(),
         UnorderedElementsAre(HloUse{add, 0, {}}, HloUse{body_root, 0, {}},
                              HloUse{xla_while, 0, {0}}));
 
@@ -716,7 +713,7 @@ TEST_P(HloDataflowAnalysisTest, NestedWhiles) {
   const HloDataflowAnalysis& analysis = RunAnalysis(ssa_form);
 
   EXPECT_THAT(HloValuesAt(inner_param, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(negate)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(negate)));
   if (ssa_form) {
     EXPECT_TRUE(analysis.ValueIsDefinedAt(inner_param, /*index=*/{1}));
     EXPECT_TRUE(
@@ -725,7 +722,7 @@ TEST_P(HloDataflowAnalysisTest, NestedWhiles) {
     // Element 0 of the nested while is %negate.
     EXPECT_FALSE(analysis.ValueIsDefinedAt(nested_while, /*index=*/{0}));
     EXPECT_THAT(HloValuesAt(inner_param, /*index=*/{0}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(negate)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(negate)));
     // Element 1 is a phi value (join of %add and %constant2).
     EXPECT_TRUE(analysis.ValueIsDefinedAt(nested_while, /*index=*/{1}));
     EXPECT_TRUE(
@@ -740,21 +737,21 @@ TEST_P(HloDataflowAnalysisTest, NestedWhiles) {
         analysis.GetValueDefinedAt(entry_while, /*index=*/{1}).is_phi());
   } else {
     EXPECT_THAT(HloValuesAt(inner_param, /*index=*/{1}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(add),
-                                     analysis.GetValueDefinedAt(constant2)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(add),
+                                     &analysis.GetValueDefinedAt(constant2)));
 
     EXPECT_THAT(HloValuesAt(nested_while, /*index=*/{0}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(negate)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(negate)));
     EXPECT_THAT(HloValuesAt(nested_while, /*index=*/{1}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(add),
-                                     analysis.GetValueDefinedAt(constant2)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(add),
+                                     &analysis.GetValueDefinedAt(constant2)));
 
     EXPECT_THAT(HloValuesAt(entry_while, /*index=*/{0}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(negate),
-                                     analysis.GetValueDefinedAt(constant1)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(negate),
+                                     &analysis.GetValueDefinedAt(constant1)));
     EXPECT_THAT(HloValuesAt(entry_while, /*index=*/{1}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(add),
-                                     analysis.GetValueDefinedAt(constant2)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(add),
+                                     &analysis.GetValueDefinedAt(constant2)));
   }
 }
 
@@ -891,11 +888,11 @@ TEST_P(HloDataflowAnalysisTest, SwizzlingWhile) {
   } else {
     // Elements 0 and 1 have both constants as reaching definitions.
     EXPECT_THAT(HloValuesAt(xla_while, /*index=*/{0}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                     analysis.GetValueDefinedAt(constant2)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1),
+                                     &analysis.GetValueDefinedAt(constant2)));
     EXPECT_THAT(HloValuesAt(xla_while, /*index=*/{1}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                     analysis.GetValueDefinedAt(constant2)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1),
+                                     &analysis.GetValueDefinedAt(constant2)));
     EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).live_out_of_module());
     EXPECT_TRUE(analysis.GetValueDefinedAt(constant2).live_out_of_module());
   }
@@ -974,29 +971,29 @@ TEST_P(HloDataflowAnalysisTest, TupleSelect) {
   EXPECT_FALSE(analysis.ValueIsDefinedAt(select1234, /*index=*/{0}));
 
   EXPECT_THAT(HloValuesAt(select11, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(constant1)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1)));
   EXPECT_THAT(HloValuesAt(select12, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                   analysis.GetValueDefinedAt(constant2)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1),
+                                   &analysis.GetValueDefinedAt(constant2)));
   EXPECT_THAT(HloValuesAt(select34, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(constant3),
-                                   analysis.GetValueDefinedAt(constant4)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(constant3),
+                                   &analysis.GetValueDefinedAt(constant4)));
   EXPECT_THAT(HloValuesAt(select1234, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                   analysis.GetValueDefinedAt(constant2),
-                                   analysis.GetValueDefinedAt(constant3),
-                                   analysis.GetValueDefinedAt(constant4)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1),
+                                   &analysis.GetValueDefinedAt(constant2),
+                                   &analysis.GetValueDefinedAt(constant3),
+                                   &analysis.GetValueDefinedAt(constant4)));
 
   EXPECT_THAT(
-      analysis.GetValueDefinedAt(tuple1, /*index=*/{}).uses(),
+      analysis.GetValueDefinedAt(tuple1, /*index=*/{}).GetUses(),
       UnorderedElementsAre(HloUse{select11, 1, {}}, HloUse{select11, 2, {}},
                            HloUse{select12, 1, {}}));
 
   // The two constant values just pass through the Selects and are not
   // used except at the root. They are live out however.
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).GetUses(),
               UnorderedElementsAre(HloUse{select1234, 1, {0}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).GetUses(),
               UnorderedElementsAre(HloUse{select1234, 1, {0}}));
   EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).live_out_of_module());
   EXPECT_TRUE(analysis.GetValueDefinedAt(constant2).live_out_of_module());
@@ -1037,16 +1034,16 @@ TEST_P(HloDataflowAnalysisTest, NestedTupleSelect) {
   EXPECT_TRUE(analysis.ValueIsDefinedAt(select));
 
   EXPECT_THAT(HloValuesAt(select, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                   analysis.GetValueDefinedAt(constant4)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1),
+                                   &analysis.GetValueDefinedAt(constant4)));
   EXPECT_THAT(HloValuesAt(select, /*index=*/{1}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(inner_tuple1),
-                                   analysis.GetValueDefinedAt(inner_tuple2)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(inner_tuple1),
+                                   &analysis.GetValueDefinedAt(inner_tuple2)));
   EXPECT_THAT(HloValuesAt(select, /*index=*/{1, 0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(constant2),
-                                   analysis.GetValueDefinedAt(constant5)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(constant2),
+                                   &analysis.GetValueDefinedAt(constant5)));
   EXPECT_THAT(HloValuesAt(select, /*index=*/{1, 1}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(constant3)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(constant3)));
 }
 
 TEST_P(HloDataflowAnalysisTest, TupleSelectToWhile) {
@@ -1139,14 +1136,14 @@ TEST_P(HloDataflowAnalysisTest, TupleSelectToWhile) {
                     .live_out_of_module());
   } else {
     EXPECT_THAT(HloValuesAt(gte),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                     analysis.GetValueDefinedAt(constant2)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1),
+                                     &analysis.GetValueDefinedAt(constant2)));
     EXPECT_THAT(HloValuesAt(xla_while, /*index=*/{0}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                     analysis.GetValueDefinedAt(constant2)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1),
+                                     &analysis.GetValueDefinedAt(constant2)));
     EXPECT_THAT(HloValuesAt(xla_while, /*index=*/{1}),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(add),
-                                     analysis.GetValueDefinedAt(constant3)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(add),
+                                     &analysis.GetValueDefinedAt(constant3)));
     EXPECT_TRUE(analysis.GetValueDefinedAt(constant1).live_out_of_module());
     EXPECT_TRUE(analysis.GetValueDefinedAt(constant2).live_out_of_module());
     EXPECT_TRUE(analysis.GetValueDefinedAt(constant3).live_out_of_module());
@@ -1216,11 +1213,45 @@ TEST_P(HloDataflowAnalysisTest, TupleCopy) {
   EXPECT_FALSE(analysis.ValueIsDefinedAt(copy, /*index=*/{1}));
 
   EXPECT_THAT(HloValuesAt(copy, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(param0)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(param0)));
   EXPECT_THAT(HloValuesAt(copy, /*index=*/{1}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(param1)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(param1)));
   EXPECT_TRUE(
       analysis.GetValueDefinedAt(copy, /*index=*/{}).live_out_of_module());
+}
+
+TEST_P(HloDataflowAnalysisTest, OptimizationBarrier) {
+  // Test that an optimization barrier is a nop.
+  auto builder = HloComputation::Builder(TestName());
+  auto param0 = builder.AddInstruction(
+      HloInstruction::CreateParameter(0, scalar_shape_, "param0"));
+  auto param1 = builder.AddInstruction(
+      HloInstruction::CreateParameter(1, scalar_shape_, "param1"));
+  auto tuple =
+      builder.AddInstruction(HloInstruction::CreateTuple({param0, param1}));
+  auto barrier = builder.AddInstruction(HloInstruction::CreateUnary(
+      tuple->shape(), HloOpcode::kOptimizationBarrier, tuple));
+  module_->AddEntryComputation(builder.Build());
+  SCOPED_TRACE(module_->ToString());
+
+  bool ssa_form = GetParam();
+  const HloDataflowAnalysis& analysis = RunAnalysis(ssa_form);
+
+  EXPECT_EQ(analysis.values().size(), 3);
+
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(param0));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(param1));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(tuple, /*index=*/{}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(tuple, /*index=*/{0}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(tuple, /*index=*/{1}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(barrier, /*index=*/{}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(barrier, /*index=*/{0}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(barrier, /*index=*/{1}));
+
+  EXPECT_THAT(HloValuesAt(barrier, /*index=*/{0}),
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(param0)));
+  EXPECT_THAT(HloValuesAt(barrier, /*index=*/{1}),
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(param1)));
 }
 
 TEST_P(HloDataflowAnalysisTest, CopyStartAndCopyDone) {
@@ -1250,9 +1281,60 @@ TEST_P(HloDataflowAnalysisTest, CopyStartAndCopyDone) {
   EXPECT_FALSE(analysis.ValueIsDefinedAt(copy_done, /*index=*/{}));
   EXPECT_THAT(
       HloValuesAt(copy_done, /*index=*/{}),
-      UnorderedElementsAre(analysis.GetValueDefinedAt(copy_start, {0})));
+      UnorderedElementsAre(&analysis.GetValueDefinedAt(copy_start, {0})));
   EXPECT_TRUE(analysis.GetValueDefinedAt(copy_start, /*index=*/{0})
                   .live_out_of_module());
+}
+
+TEST_P(HloDataflowAnalysisTest, AsyncOps) {
+  std::string hlo_str = R"(
+  HloModule module
+
+  ENTRY entry {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[2,3], u32[]) custom-call-start(p0), custom_call_target="foo"
+    async-update = ((f32[2,3]), f32[2,3], u32[]) custom-call-update(async-start), custom_call_target="foo"
+    ROOT async-done = f32[2,3] custom-call-done(async-update), custom_call_target="foo"
+  }
+)";
+  TF_ASSERT_OK_AND_ASSIGN(
+      module_, ParseAndReturnVerifiedModule(hlo_str, GetModuleConfigForTest()));
+
+  bool ssa_form = GetParam();
+  const HloDataflowAnalysis& analysis = RunAnalysis(ssa_form);
+
+  const HloInstruction* param =
+      module_->entry_computation()->parameter_instruction(0);
+  const HloInstruction* async_start =
+      FindInstruction(module_.get(), "async-start");
+  const HloInstruction* async_update =
+      FindInstruction(module_.get(), "async-update");
+  const HloInstruction* async_done =
+      FindInstruction(module_.get(), "async-done");
+
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(async_start, /*index=*/{}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(async_start, /*index=*/{0, 0}));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(async_start, /*index=*/{1}));
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(async_start, /*index=*/{2}));
+  EXPECT_THAT(HloValuesAt(async_start, /*index=*/{0, 0}),
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(param, {})));
+  EXPECT_TRUE(analysis.GetValueDefinedAt(async_start, /*index=*/{1})
+                  .live_out_of_module());
+
+  EXPECT_TRUE(analysis.ValueIsDefinedAt(async_update, /*index=*/{}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(async_update, /*index=*/{0, 0}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(async_update, /*index=*/{1}));
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(async_update, /*index=*/{2}));
+  EXPECT_THAT(HloValuesAt(async_update, /*index=*/{0, 0}),
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(param, {})));
+  EXPECT_THAT(
+      HloValuesAt(async_update, /*index=*/{1}),
+      UnorderedElementsAre(&analysis.GetValueDefinedAt(async_start, {1})));
+
+  EXPECT_FALSE(analysis.ValueIsDefinedAt(async_done, /*index=*/{}));
+  EXPECT_THAT(
+      HloValuesAt(async_done, /*index=*/{}),
+      UnorderedElementsAre(&analysis.GetValueDefinedAt(async_start, {1})));
 }
 
 TEST_P(HloDataflowAnalysisTest, SendAndSendDone) {
@@ -1279,7 +1361,7 @@ TEST_P(HloDataflowAnalysisTest, SendAndSendDone) {
   EXPECT_TRUE(analysis.ValueIsDefinedAt(send, /*index=*/{2}));
   EXPECT_TRUE(analysis.ValueIsDefinedAt(send_done));
   EXPECT_THAT(HloValuesAt(send, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(param)));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(param)));
 }
 
 TEST_P(HloDataflowAnalysisTest, SetDimensionSizeForwardsValue) {
@@ -1287,7 +1369,7 @@ TEST_P(HloDataflowAnalysisTest, SetDimensionSizeForwardsValue) {
   auto param = builder.AddInstruction(
       HloInstruction::CreateParameter(0, vector_shape_, "param"));
   auto size = builder.AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32>(3)));
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(3)));
   auto sds = builder.AddInstruction(
       HloInstruction::CreateSetDimensionSize(vector_shape_, param, size, 0));
 
@@ -1329,7 +1411,7 @@ TEST_P(HloDataflowAnalysisTest, RecvAndRecvDone) {
   EXPECT_FALSE(analysis.ValueIsDefinedAt(recv_done, /*index=*/{0}));
   EXPECT_TRUE(analysis.ValueIsDefinedAt(recv_done, /*index=*/{1}));
   EXPECT_THAT(HloValuesAt(recv_done, /*index=*/{0}),
-              UnorderedElementsAre(analysis.GetValueDefinedAt(recv, {0})));
+              UnorderedElementsAre(&analysis.GetValueDefinedAt(recv, {0})));
   EXPECT_TRUE(
       analysis.GetValueDefinedAt(recv, /*index=*/{0}).live_out_of_module());
 }
@@ -1757,11 +1839,11 @@ TEST_P(HloDataflowAnalysisTest, ConditionalWithIdentity) {
   EXPECT_EQ(analysis.GetUniqueValueAt(false_param),
             analysis.GetValueDefinedAt(constant2));
 
-  EXPECT_THAT(analysis.GetValueDefinedAt(pred).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(pred).GetUses(),
               ElementsAre(HloUse{conditional, 0, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).GetUses(),
               ElementsAre(HloUse{conditional, 1, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).GetUses(),
               ElementsAre(HloUse{conditional, 2, {}}));
 
   bool ssa_form = GetParam();
@@ -1772,8 +1854,8 @@ TEST_P(HloDataflowAnalysisTest, ConditionalWithIdentity) {
     EXPECT_EQ(analysis.values().size(), 3);
     EXPECT_FALSE(analysis.ValueIsDefinedAt(conditional));
     EXPECT_THAT(HloValuesAt(conditional),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(constant1),
-                                     analysis.GetValueDefinedAt(constant2)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(constant1),
+                                     &analysis.GetValueDefinedAt(constant2)));
   }
 }
 
@@ -1866,17 +1948,17 @@ TEST_P(HloDataflowAnalysisTest, ConditionalTakingTupleOperand) {
   EXPECT_EQ(analysis.GetUniqueValueAt(false_y),
             analysis.GetValueDefinedAt(constant2));
 
-  EXPECT_THAT(analysis.GetValueDefinedAt(pred).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(pred).GetUses(),
               ElementsAre(HloUse{conditional, 0, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant1).GetUses(),
               UnorderedElementsAre(HloUse{conditional, 1, {0}},
                                    HloUse{conditional, 2, {0}},
                                    HloUse{add, 0, {}}, HloUse{sub, 0, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(constant2).GetUses(),
               UnorderedElementsAre(HloUse{conditional, 1, {1}},
                                    HloUse{conditional, 2, {1}},
                                    HloUse{add, 1, {}}, HloUse{sub, 1, {}}));
-  EXPECT_THAT(analysis.GetValueDefinedAt(tuple_operand).uses(),
+  EXPECT_THAT(analysis.GetValueDefinedAt(tuple_operand).GetUses(),
               UnorderedElementsAre(
                   HloUse{conditional, 1, {}}, HloUse{conditional, 2, {}},
                   HloUse{true_x, 0, {}}, HloUse{true_y, 0, {}},
@@ -1890,8 +1972,8 @@ TEST_P(HloDataflowAnalysisTest, ConditionalTakingTupleOperand) {
     EXPECT_EQ(analysis.values().size(), 6);
     EXPECT_FALSE(analysis.ValueIsDefinedAt(conditional));
     EXPECT_THAT(HloValuesAt(conditional),
-                UnorderedElementsAre(analysis.GetValueDefinedAt(add),
-                                     analysis.GetValueDefinedAt(sub)));
+                UnorderedElementsAre(&analysis.GetValueDefinedAt(add),
+                                     &analysis.GetValueDefinedAt(sub)));
   }
 }
 
@@ -2022,19 +2104,19 @@ TEST_P(HloDataflowAnalysisTest, NestedConditionals) {
     EXPECT_THAT(
         HloValuesAt(inner_conditional),
         UnorderedElementsAre(
-            analysis.GetValueDefinedAt(computation1->root_instruction()),
-            analysis.GetValueDefinedAt(computation2->root_instruction())));
+            &analysis.GetValueDefinedAt(computation1->root_instruction()),
+            &analysis.GetValueDefinedAt(computation2->root_instruction())));
     EXPECT_THAT(
         HloValuesAt(conditional),
         UnorderedElementsAre(
-            analysis.GetValueDefinedAt(computation1->root_instruction()),
-            analysis.GetValueDefinedAt(computation2->root_instruction()),
-            analysis.GetValueDefinedAt(computation3->root_instruction())));
+            &analysis.GetValueDefinedAt(computation1->root_instruction()),
+            &analysis.GetValueDefinedAt(computation2->root_instruction()),
+            &analysis.GetValueDefinedAt(computation3->root_instruction())));
   }
 }
 
 TEST_P(HloDataflowAnalysisTest, AddDependency) {
-  string module_string = R"(
+  std::string module_string = R"(
 HloModule AddDependency
 ENTRY %AddDependency (p: f32[3]) -> f32[3] {
   %p = f32[3] parameter(0)
@@ -2055,6 +2137,78 @@ ENTRY %AddDependency (p: f32[3]) -> f32[3] {
   // not.
   EXPECT_EQ(analysis->values().size(), 2);
   EXPECT_FALSE(analysis->ValueIsDefinedAt(root));
+}
+
+TEST_F(HloDataflowAnalysisTest, AllReduceStartAndDone) {
+  const char* hlo_text = R"(
+    HloModule test
+    add {
+      x = f32[] parameter(0)
+      y = f32[] parameter(1)
+      ROOT add = f32[] add(x, y)
+    }
+    ENTRY entry {
+      p0 = f32[2] parameter(0)
+      start = f32[2] all-reduce-start(p0), to_apply=add
+      ROOT done = f32[2] all-reduce-done(start)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_text));
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloDataflowAnalysis> analysis,
+                          HloDataflowAnalysis::Run(*module));
+
+  HloInstruction* done = module->entry_computation()->root_instruction();
+  HloInstruction* start = done->mutable_operand(0);
+  HloInstruction* param0 = start->mutable_operand(0);
+
+  EXPECT_TRUE(analysis->ValueIsDefinedAt(start, /*index=*/{}));
+  EXPECT_FALSE(analysis->ValueIsDefinedAt(done));
+
+  EXPECT_THAT(analysis->GetValueDefinedAt(param0).GetUses(),
+              UnorderedElementsAre(HloUse{start, 0, {}}));
+  EXPECT_THAT(analysis->GetValueDefinedAt(start).GetUses(),
+              UnorderedElementsAre(HloUse{done, 0, {}}));
+}
+
+TEST_F(HloDataflowAnalysisTest, AllReduceStartAndDoneTwoOperands) {
+  const char* hlo_text = R"(
+    HloModule test
+    add {
+      x = f32[] parameter(0)
+      y = f32[] parameter(1)
+      ROOT add = f32[] add(x, y)
+    }
+    ENTRY entry {
+      p0 = f32[2] parameter(0)
+      p1 = f32[2] parameter(1)
+      start = (f32[2], f32[2]) all-reduce-start(p0, p1), to_apply=add
+      ROOT done = (f32[2], f32[2]) all-reduce-done(start)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnVerifiedModule(hlo_text));
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloDataflowAnalysis> analysis,
+                          HloDataflowAnalysis::Run(*module));
+
+  HloInstruction* done = module->entry_computation()->root_instruction();
+  HloInstruction* start = done->mutable_operand(0);
+  HloInstruction* param0 = start->mutable_operand(0);
+  HloInstruction* param1 = start->mutable_operand(1);
+
+  EXPECT_TRUE(analysis->ValueIsDefinedAt(start, /*index=*/{}));
+  EXPECT_TRUE(analysis->ValueIsDefinedAt(start, /*index=*/{0}));
+  EXPECT_TRUE(analysis->ValueIsDefinedAt(start, /*index=*/{1}));
+  EXPECT_FALSE(analysis->ValueIsDefinedAt(done));
+
+  EXPECT_THAT(analysis->GetValueDefinedAt(param0).GetUses(),
+              UnorderedElementsAre(HloUse{start, 0, {}}));
+  EXPECT_THAT(analysis->GetValueDefinedAt(param1).GetUses(),
+              UnorderedElementsAre(HloUse{start, 1, {}}));
+  EXPECT_THAT(analysis->GetValueDefinedAt(start, {}).GetUses(),
+              UnorderedElementsAre(HloUse{done, 0, {}}));
 }
 
 INSTANTIATE_TEST_SUITE_P(HloDataflowAnalysisInstantiation,
@@ -2125,7 +2279,7 @@ TEST_F(DoesNotUseOperandBufferTest, FusedDynamicUpdateSlice) {
 
   // Create a DynamicUpdateSlice instruction of tuple element 1.
   auto starts = builder.AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32>(2)));
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(2)));
   auto update = builder.AddInstruction(HloInstruction::CreateConstant(
       LiteralUtil::CreateR1<float>({2.f, 2.f, 2.f})));
   auto dynamic_update_slice =
@@ -2168,7 +2322,7 @@ TEST_F(DoesNotUseOperandBufferTest, IndirectUses) {
 
   // Create a DynamicUpdateSlice instruction of tuple element 1.
   auto starts = builder.AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32>(2)));
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(2)));
   auto update = builder.AddInstruction(HloInstruction::CreateConstant(
       LiteralUtil::CreateR1<float>({2.f, 2.f, 2.f})));
   auto dynamic_update_slice =
@@ -2308,7 +2462,7 @@ TEST_F(CanShareOperandBufferWithUserTest,
   auto param = builder.AddInstruction(
       HloInstruction::CreateParameter(0, data_shape, "param0"));
   auto zero = builder.AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int64>(0)));
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int64_t>(0)));
   auto ds = builder.AddInstruction(HloInstruction::CreateDynamicSlice(
       slice_shape, param, {zero, zero}, {1, 2}));
 
@@ -2406,7 +2560,7 @@ TEST_F(CanShareOperandBufferWithUserTest, FusedDynamicUpdateSlice) {
 
   // Create a DynamicUpdateSlice instruction of tuple element 1.
   auto starts = builder.AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32>(2)));
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(2)));
   auto update = builder.AddInstruction(HloInstruction::CreateConstant(
       LiteralUtil::CreateR1<float>({2.f, 2.f, 2.f})));
   auto dynamic_update_slice =
@@ -2447,7 +2601,7 @@ TEST_F(CanShareOperandBufferWithUserTest,
 
   // Create a DynamicUpdateSlice instruction of tuple element 1.
   auto starts = builder.AddInstruction(
-      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32>(2)));
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<int32_t>(2)));
   auto update = builder.AddInstruction(HloInstruction::CreateConstant(
       LiteralUtil::CreateR1<float>({2.f, 2.f, 2.f})));
   auto dynamic_update_slice =
@@ -2793,6 +2947,307 @@ TEST_F(CanShareOperandBufferWithUserTest, CallToComputationWithFusionRoot) {
 
   EXPECT_TRUE(
       dataflow_analysis_->CanShareOperandBufferWithUser(reverse, {}, call, {}));
+}
+
+TEST_F(CanShareOperandBufferWithUserTest, ConcatSliceWithElementwise) {
+  const char* kModule = R"(
+    HloModule test
+
+    fused_computation {
+      p0 = f32[10,20] parameter(0)
+      p1 = f32[10,20] parameter(1)
+      p2 = f32[10,10] parameter(2)
+      p3 = f32[10,10] parameter(3)
+      add0 = f32[10, 20] add(p0, p1)
+      sub0 = f32[10, 10] subtract(p2, p3)
+      reshape0 = f32[200] reshape(add0)
+      reshape1 = f32[100] reshape(sub0)
+      concat0 = f32[300] concatenate(reshape0, reshape1), dimensions={0}
+      slice0 = f32[200] slice(concat0), slice={[0:200]}
+      slice1 = f32[100] slice(concat0), slice={[200:300]}
+      ROOT tuple = (f32[200], f32[100]) tuple(slice0, slice1)
+    }
+
+    ENTRY test {
+      p0 = f32[10,20] parameter(0)
+      p1 = f32[10,20] parameter(1)
+      p2 = f32[10,10] parameter(2)
+      p3 = f32[10,10] parameter(3)
+      ROOT fusion = (f32[200], f32[100]) fusion(p0, p1, p2, p3), kind=kInput, calls=fused_computation
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(kModule));
+  auto* fusion = module_->entry_computation()->root_instruction();
+  auto* param0 = module_->entry_computation()->parameter_instruction(0);
+  auto* param1 = module_->entry_computation()->parameter_instruction(1);
+  auto* param2 = module_->entry_computation()->parameter_instruction(2);
+  auto* param3 = module_->entry_computation()->parameter_instruction(3);
+
+  RunAnalysis();
+  EXPECT_TRUE(dataflow_analysis_->CanShareOperandBufferWithUser(param0, {},
+                                                                fusion, {0}));
+  EXPECT_TRUE(dataflow_analysis_->CanShareOperandBufferWithUser(param1, {},
+                                                                fusion, {0}));
+  EXPECT_TRUE(dataflow_analysis_->CanShareOperandBufferWithUser(param2, {},
+                                                                fusion, {1}));
+  EXPECT_TRUE(dataflow_analysis_->CanShareOperandBufferWithUser(param3, {},
+                                                                fusion, {1}));
+  // Tensors of different sizes cannot share buffer.
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param0, {},
+                                                                 fusion, {1}));
+}
+
+TEST_F(CanShareOperandBufferWithUserTest, ConcatSliceNegativeTest) {
+  const char* kModule = R"(
+    HloModule test
+
+    fused_computation {
+      // p0 has multiple transitive uses fed to concat. So, p0 cannot share
+      // buffer with outputs because the aliased output could be written before
+      // all the uses of p0 are finished.
+      p0 = f32[100] parameter(0)
+      p1 = f32[100] parameter(1)
+      add0 = f32[100] add(p0, p1)
+      concat0 = f32[200] concatenate(p0, add0), dimensions={0}
+      slice0 = f32[100] slice(concat0), slice={[0:100]}
+      slice1 = f32[100] slice(concat0), slice={[100:200]}
+      ROOT tuple = (f32[100], f32[100]) tuple(slice0, slice1)
+    }
+
+    ENTRY test {
+      p0 = f32[100] parameter(0)
+      p1 = f32[100] parameter(1)
+      ROOT fusion = (f32[100], f32[100]) fusion(p0, p1),
+                        kind=kInput, calls=fused_computation
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(kModule));
+  auto* fusion = module_->entry_computation()->root_instruction();
+  auto* param0 = module_->entry_computation()->parameter_instruction(0);
+  auto* param1 = module_->entry_computation()->parameter_instruction(1);
+
+  RunAnalysis();
+  // p0 cannot share with either fusion{0} or fusion{1}.
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param0, {},
+                                                                 fusion, {0}));
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param0, {},
+                                                                 fusion, {1}));
+  // p1 cannot share with fusion{0} because we're not sure about their
+  // relationship.
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param1, {},
+                                                                 fusion, {0}));
+  // p1 can share with fusion{1} because they will be executed in an
+  // elementwise manner.
+  EXPECT_TRUE(dataflow_analysis_->CanShareOperandBufferWithUser(param1, {},
+                                                                fusion, {1}));
+}
+
+TEST_F(CanShareOperandBufferWithUserTest, MultipleConcatenates) {
+  const char* kModule = R"(
+    HloModule test
+
+    fused_computation {
+      p0 = f32[100] parameter(0)
+      p1 = f32[100] parameter(1)
+      add0 = f32[100] add(p0, p1)
+      sub0 = f32[100] subtract(p1, p1)
+      concat0 = f32[200] concatenate(p0, add0), dimensions={0}
+      slice0 = f32[100] slice(concat0), slice={[0:100]}
+      slice1 = f32[100] slice(concat0), slice={[100:200]}
+      concat1 = f32[200] concatenate(p0, sub0), dimensions={0}
+      slice2 = f32[100] slice(concat1), slice={[0:100]}
+      slice3 = f32[100] slice(concat1), slice={[100:200]}
+      ROOT tuple = (f32[100], f32[100], f32[100], f32[100])
+                       tuple(slice0, slice1, slice2, slice3)
+    }
+
+    ENTRY test {
+      p0 = f32[100] parameter(0)
+      p1 = f32[100] parameter(1)
+      ROOT fusion = (f32[100], f32[100], f32[100], f32[100])
+          fusion(p0, p1), kind=kInput, calls=fused_computation
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(kModule));
+  auto* fusion = module_->entry_computation()->root_instruction();
+  auto* param0 = module_->entry_computation()->parameter_instruction(0);
+  auto* param1 = module_->entry_computation()->parameter_instruction(1);
+
+  RunAnalysis();
+  // p0 cannot share.
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param0, {},
+                                                                 fusion, {0}));
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param0, {},
+                                                                 fusion, {1}));
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param0, {},
+                                                                 fusion, {2}));
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param0, {},
+                                                                 fusion, {3}));
+  // p1 can share with either fusion{1} or fusion{3}.
+  EXPECT_TRUE(dataflow_analysis_->CanShareOperandBufferWithUser(param1, {},
+                                                                fusion, {1}));
+  EXPECT_TRUE(dataflow_analysis_->CanShareOperandBufferWithUser(param1, {},
+                                                                fusion, {3}));
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param1, {},
+                                                                 fusion, {0}));
+  EXPECT_FALSE(dataflow_analysis_->CanShareOperandBufferWithUser(param1, {},
+                                                                 fusion, {2}));
+}
+
+class GetInPlaceInputOutputPairsTest : public HloDataflowAnalysisTestBase {};
+
+TEST_F(GetInPlaceInputOutputPairsTest, DUS) {
+  const char* kModule = R"(
+    HloModule test
+
+    ENTRY test {
+      p0 = f32[10] parameter(0)
+      p1 = f32[5] parameter(1)
+      p2 = s32[] parameter(2)
+      ROOT dus = f32[10] dynamic-update-slice(p0, p1, p2)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(kModule));
+  HloInstruction* dus = module_->entry_computation()->root_instruction();
+
+  auto in_place_pairs = HloDataflowAnalysis::GetInPlaceInputOutputPairs(dus);
+  std::vector<std::pair<HloUse, ShapeIndex>> expected_pairs;
+  expected_pairs.push_back({HloUse{dus, 0, {}}, {}});
+  EXPECT_EQ(in_place_pairs, expected_pairs);
+}
+
+TEST_F(GetInPlaceInputOutputPairsTest, DUSFusion) {
+  const char* kModule = R"(
+    HloModule test
+
+    fused_computation {
+      p0 = f32[10] parameter(0)
+      p1 = f32[5] parameter(1)
+      p2 = s32[] parameter(2)
+      ROOT dus = f32[10] dynamic-update-slice(p0, p1, p2)
+    }
+
+    ENTRY test {
+      p0 = f32[10] parameter(0)
+      p1 = f32[5] parameter(1)
+      p2 = s32[] parameter(2)
+      ROOT fusion = f32[10] fusion(p0, p1, p2), kind=kLoop, calls=fused_computation
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(kModule));
+  HloInstruction* fusion = module_->entry_computation()->root_instruction();
+
+  auto in_place_pairs = HloDataflowAnalysis::GetInPlaceInputOutputPairs(fusion);
+  std::vector<std::pair<HloUse, ShapeIndex>> expected_pairs;
+  expected_pairs.push_back({HloUse{fusion, 0, {}}, {}});
+  EXPECT_EQ(in_place_pairs, expected_pairs);
+}
+
+TEST_F(GetInPlaceInputOutputPairsTest, NonDUSFusion) {
+  const char* kModule = R"(
+    HloModule test
+
+    fused_computation {
+      p0 = f32[10] parameter(0)
+      p1 = f32[10] parameter(1)
+      ROOT add = f32[10] add(p0, p1)
+    }
+
+    ENTRY test {
+      p0 = f32[10] parameter(0)
+      p1 = f32[10] parameter(1)
+      ROOT fusion = f32[10] fusion(p0, p1), kind=kLoop, calls=fused_computation
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(kModule));
+  HloInstruction* fusion = module_->entry_computation()->root_instruction();
+
+  auto in_place_pairs = HloDataflowAnalysis::GetInPlaceInputOutputPairs(fusion);
+  std::vector<std::pair<HloUse, ShapeIndex>> expected_pairs;
+  EXPECT_EQ(in_place_pairs, expected_pairs);
+}
+
+TEST_F(GetInPlaceInputOutputPairsTest, NestedDUSFusion) {
+  const char* kModule = R"(
+    HloModule test
+
+    fused_computation1 {
+      p0 = f32[10] parameter(0)
+      p1 = f32[5] parameter(1)
+      p2 = s32[] parameter(2)
+      ROOT dus = f32[10] dynamic-update-slice(p0, p1, p2)
+    }
+
+    fused_computation2 {
+      p0 = f32[10] parameter(0)
+      p1 = f32[5] parameter(1)
+      p2 = s32[] parameter(2)
+      ROOT fusion = f32[10] fusion(p0, p1, p2), kind=kLoop, calls=fused_computation1
+    }
+
+    ENTRY test {
+      p0 = f32[10] parameter(0)
+      p1 = f32[5] parameter(1)
+      p2 = s32[] parameter(2)
+      ROOT fusion = f32[10] fusion(p0, p1, p2), kind=kLoop, calls=fused_computation2
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(kModule));
+  HloInstruction* fusion = module_->entry_computation()->root_instruction();
+
+  auto in_place_pairs = HloDataflowAnalysis::GetInPlaceInputOutputPairs(fusion);
+  std::vector<std::pair<HloUse, ShapeIndex>> expected_pairs;
+  expected_pairs.push_back({HloUse{fusion, 0, {}}, {}});
+  EXPECT_EQ(in_place_pairs, expected_pairs);
+}
+
+TEST_F(GetInPlaceInputOutputPairsTest, NestedMultiOutputDUSFusion) {
+  const char* kModule = R"(
+    HloModule test
+
+    fused_computation1 {
+      p0 = s32[] parameter(0)
+      p1 = (f32[5],f32[10]) parameter(1)
+      gte0 = f32[5] get-tuple-element(p1), index=0
+      gte1 = f32[10] get-tuple-element(p1), index=1
+      dus = f32[10] dynamic-update-slice(gte1, gte0, p0)
+      negate = f32[5] negate(gte0)
+      ROOT tuple = (f32[5],f32[10]) tuple(negate, dus)
+    }
+
+    fused_computation2 {
+      p0 = f32[5] parameter(0)
+      p1 = (f32[10],s32[]) parameter(1)
+      gte0 = f32[10] get-tuple-element(p1), index=0
+      gte1 = s32[] get-tuple-element(p1), index=1
+      in_tuple = (f32[5],f32[10]) tuple(p0, gte0)
+      inner_fusion = (f32[5],f32[10]) fusion(gte1, in_tuple), kind=kLoop, calls=fused_computation1
+      fusion_gte0 = f32[5] get-tuple-element(inner_fusion), index=0
+      fusion_gte1 = f32[10] get-tuple-element(inner_fusion), index=1
+      negate = f32[5] negate(p0)
+      ROOT tuple = (f32[5],f32[5],f32[10]) tuple(negate, fusion_gte0, fusion_gte1)
+    }
+
+    ENTRY test {
+      p0 = f32[5] parameter(0)
+      p1 = (f32[10],s32[]) parameter(1)
+      ROOT fusion = (f32[5],f32[5],f32[10]) fusion(p0, p1), kind=kLoop, calls=fused_computation2
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(module_, ParseAndReturnVerifiedModule(kModule));
+  HloInstruction* fusion = module_->entry_computation()->root_instruction();
+  HloInstruction* inner_fusion = FindInstruction(module_.get(), "inner_fusion");
+
+  auto inner_in_place_pairs =
+      HloDataflowAnalysis::GetInPlaceInputOutputPairs(inner_fusion);
+  std::vector<std::pair<HloUse, ShapeIndex>> inner_expected_pairs;
+  inner_expected_pairs.push_back({HloUse{inner_fusion, 1, {1}}, {1}});
+  EXPECT_EQ(inner_in_place_pairs, inner_expected_pairs);
+
+  auto in_place_pairs = HloDataflowAnalysis::GetInPlaceInputOutputPairs(fusion);
+  std::vector<std::pair<HloUse, ShapeIndex>> expected_pairs;
+  expected_pairs.push_back({HloUse{fusion, 1, {0}}, {2}});
+  EXPECT_EQ(in_place_pairs, expected_pairs);
 }
 
 }  // namespace

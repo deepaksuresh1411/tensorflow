@@ -20,7 +20,7 @@ limitations under the License.
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
@@ -77,8 +77,10 @@ using tensorflow::tracing::TracingTensorHandle;
 namespace {
 
 void RegisterDialects(mlir::MLIRContext& ctx) {
-  mlir::RegisterAllTensorFlowDialects(ctx.getDialectRegistry());
-  ctx.getDialectRegistry().loadAll(&ctx);
+  mlir::DialectRegistry registry;
+  mlir::RegisterAllTensorFlowDialects(registry);
+  ctx.appendDialectRegistry(registry);
+  ctx.loadAllAvailableDialects();
 }
 
 Status ConvertDataTypeToTensor(tensorflow::DataType dtype, Builder builder,
@@ -216,7 +218,7 @@ class MlirAbstractOp : public TracingOperation {
 class MlirFunction : public AbstractFunction {
  public:
   explicit MlirFunction(std::unique_ptr<MLIRContext> context,
-                        OwningModuleRef module, FuncOp func)
+                        OwningOpRef<mlir::ModuleOp> module, FuncOp func)
       : AbstractFunction(kMlir),
         context_(std::move(context)),
         module_(std::move(module)),
@@ -231,7 +233,7 @@ class MlirFunction : public AbstractFunction {
 
  private:
   std::unique_ptr<MLIRContext> context_;
-  OwningModuleRef module_;
+  OwningOpRef<mlir::ModuleOp> module_;
   FuncOp func_;
   std::unique_ptr<tensorflow::FunctionDef> fdef_;
 };
@@ -278,7 +280,7 @@ class MlirFunctionContext : public TracingContext {
   std::unique_ptr<MLIRContext> context_;
   OpBuilder builder_;
   FuncOp func_;
-  OwningModuleRef module_;
+  OwningOpRef<mlir::ModuleOp> module_;
 };
 
 Status MlirAbstractOp::Reset(const char* op, const char* device_name) {
@@ -461,7 +463,7 @@ Status MlirAbstractOp::SetAttrFloat(const char* attr_name, float value) {
   return Unimplemented("SetAttrFloat has not been implemented yet.");
 }
 Status MlirAbstractOp::SetAttrBool(const char* attr_name, bool value) {
-  attrs_[attr_name] = BoolAttr::get(value, context_);
+  attrs_[attr_name] = BoolAttr::get(context_, value);
   return Status::OK();
 }
 Status MlirAbstractOp::SetAttrShape(const char* attr_name, const int64_t* dims,
@@ -527,7 +529,7 @@ Status MlirFunction::GetFunctionDef(tensorflow::FunctionDef** f) {
   // In case of failure, the `diag_handler` converts MLIR errors emitted to
   // the MLIRContext into a tensorflow::Status.
   StatusScopedDiagnosticHandler diag_handler(func_.getContext());
-  LogicalResult result = pm.run(func_.getParentOfType<ModuleOp>());
+  LogicalResult result = pm.run(func_->getParentOfType<ModuleOp>());
   (void)result;
   TF_RETURN_IF_ERROR(diag_handler.ConsumeStatus());
 
@@ -562,7 +564,8 @@ Status MlirFunctionContext::AddParameter(
   // resolved.
   Type type;
   TF_RETURN_IF_ERROR(ConvertDataTypeToTensor(dtype, builder_, &type));
-  *handle = new MlirTensor(func_.getBody().front().addArgument(type));
+  *handle =
+      new MlirTensor(func_.getBody().front().addArgument(type, func_.getLoc()));
   return Status::OK();
 }
 
@@ -646,7 +649,7 @@ Status MlirAbstractOp::AddInputList(
     types.reserve(inputs.size());
     for (AbstractTensorHandle* input : inputs)
       types.push_back(TypeAttr::get(cast<MlirTensor>(input)->getElementType()));
-    attrs_[arg_def.type_list_attr()] = ArrayAttr::get(types, GetContext());
+    attrs_[arg_def.type_list_attr()] = ArrayAttr::get(GetContext(), types);
   }
   return Status::OK();
 }
@@ -664,11 +667,11 @@ Status MlirFunctionContext::Finalize(OutputList* outputs,
           "Capturing tensors from other context is not supported.");
     ret_operands.push_back(operand->getValue());
   }
-  builder_.create<ReturnOp>(func_.getLoc(), ret_operands);
+  builder_.create<func::ReturnOp>(func_.getLoc(), ret_operands);
 
   auto arg_types = body.getArgumentTypes();
   auto result_types = body.getTerminator()->getOperandTypes();
-  func_.setType(FunctionType::get(arg_types, result_types, func_.getContext()));
+  func_.setType(FunctionType::get(func_.getContext(), arg_types, result_types));
   *f = new MlirFunction(std::move(context_), std::move(module_), func_);
   return Status::OK();
 }

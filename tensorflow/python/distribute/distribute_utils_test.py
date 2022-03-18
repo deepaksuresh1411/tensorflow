@@ -14,11 +14,8 @@
 # ==============================================================================
 """Tests for utility functions in distribute_utils."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
+import collections.abc
 
 from absl.testing import parameterized
 import wrapt
@@ -82,6 +79,30 @@ class RegroupAndSelectDeviceTest(test.TestCase, parameterized.TestCase):
     result = distribute_utils.regroup(
         (DictBasedClass(a="a1", b="b1"), DictBasedClass(a="a2", b="b2")))
     self.assertIsInstance(result, DictBasedClass)
+    self._is_per_replica(result["a"], ["a1", "a2"])
+    self._is_per_replica(result["b"], ["b1", "b2"])
+
+  def testRegroupCollectionsMapping(self):
+
+    class CollectionsMappingBasedClass(collections.abc.Mapping):
+      """Class inherited from collections.abc.Mapping."""
+
+      def __init__(self, *args, **kwargs):
+        self._d = dict(*args, **kwargs)
+
+      def __getitem__(self, key):
+        return self._d.__getitem__(key)
+
+      def __iter__(self):
+        return iter(self._d)
+
+      def __len__(self):
+        return len(self._d)
+
+    result = distribute_utils.regroup(
+        (CollectionsMappingBasedClass(a="a1", b="b1"),
+         CollectionsMappingBasedClass(a="a2", b="b2")))
+    self.assertIsInstance(result, CollectionsMappingBasedClass)
     self._is_per_replica(result["a"], ["a1", "a2"])
     self._is_per_replica(result["b"], ["b1", "b2"])
 

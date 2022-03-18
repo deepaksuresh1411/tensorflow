@@ -3,16 +3,20 @@ load("//tensorflow:tensorflow.bzl", "pybind_extension", "tf_custom_op_py_library
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_custom_op_library",
+    "tf_features_nolayering_check_if_ios",
     "tf_gen_op_wrapper_py",
     "tf_opts_nortti_if_android",
 )
 
 package(
     default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0,
+    licenses = ["notice"],
 )
 
-exports_files(glob(["*.pb"]))
+exports_files(glob([
+    "*.pb",
+    "*.pbtxt",
+]))
 
 tf_to_tflite(
     name = "permute_float",
@@ -97,6 +101,7 @@ cc_library(
     testonly = 1,
     srcs = ["double_op.cc"],
     copts = tflite_copts() + tf_opts_nortti_if_android(),
+    features = tf_features_nolayering_check_if_ios(),
     deps = select({
         "//tensorflow:android": [
             "//tensorflow/core:portable_tensorflow_lib_lite",
@@ -131,7 +136,7 @@ tf_custom_op_py_library(
     srcs = ["double_op.py"],
     dso = [":_double_op.so"],
     kernels = [":double_op_and_kernels"],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
         ":gen_double_op_wrapper",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -146,6 +151,8 @@ cc_library(
     deps = [
         "//tensorflow/lite:framework",
         "//tensorflow/lite/kernels:builtin_ops",
+        "//tensorflow/lite/kernels:kernel_util",
+        "//tensorflow/lite/kernels/internal:tensor",
     ],
     alwayslink = 1,
 )

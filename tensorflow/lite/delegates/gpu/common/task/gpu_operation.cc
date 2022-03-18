@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/task/gpu_operation.h"
 
+#include <string>
+#include <utility>
+
 #include "absl/strings/substitute.h"
 #include "tensorflow/lite/delegates/gpu/common/access_type.h"
 #include "tensorflow/lite/delegates/gpu/common/task/work_group_picking.h"
@@ -22,66 +25,50 @@ limitations under the License.
 namespace tflite {
 namespace gpu {
 namespace {
-std::string GetCommonDefines(CalculationsPrecision precision) {
-  std::string result;
-
-  switch (precision) {
-    case CalculationsPrecision::F32:
-      result += "#pragma OPENCL EXTENSION cl_khr_3d_image_writes : enable\n";
-      result += "#define ACCUM_FLT4 float4\n";
-      result += "#define FLT float\n";
-      result += "#define FLT2 float2\n";
-      result += "#define FLT3 float3\n";
-      result += "#define FLT4 float4\n";
-      result += "#define TO_FLT4 convert_float4\n";
-      result += "#define TO_ACCUM_TYPE convert_float4\n";
-      result += "#define TO_ACCUM_FLT convert_float\n";
-      break;
-    case CalculationsPrecision::F16:
-      result += "#pragma OPENCL EXTENSION cl_khr_3d_image_writes : enable\n";
-      result += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
-      result += "#define ACCUM_FLT4 half4\n";
-      result += "#define FLT half\n";
-      result += "#define FLT2 half2\n";
-      result += "#define FLT3 half3\n";
-      result += "#define FLT4 half4\n";
-      result += "#define TO_FLT4 convert_half4\n";
-      result += "#define TO_ACCUM_TYPE convert_half4\n";
-      result += "#define TO_ACCUM_FLT convert_half\n";
-      break;
-    case CalculationsPrecision::F32_F16:
-      result += "#pragma OPENCL EXTENSION cl_khr_3d_image_writes : enable\n";
-      result += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
-      result += "#define ACCUM_FLT4 float4\n";
-      result += "#define FLT half\n";
-      result += "#define FLT2 half2\n";
-      result += "#define FLT3 half3\n";
-      result += "#define FLT4 half4\n";
-      result += "#define TO_FLT4 convert_half4\n";
-      result += "#define TO_ACCUM_TYPE convert_float4\n";
-      result += "#define TO_ACCUM_FLT convert_float\n";
-      break;
+int3 GetWorkGroupsCountInternal(int grid_dimension, const int3& grid_size,
+                                const int3& work_group_size,
+                                const int3& work_group_launch_order) {
+  int3 work_groups_count;
+  if (grid_dimension == 1) {
+    work_groups_count.x = DivideRoundUp(grid_size.x, work_group_size.x);
+    work_groups_count.y = 1;
+    work_groups_count.z = 1;
+  } else if (grid_dimension == 2) {
+    int3 wgs;
+    wgs.x = DivideRoundUp(grid_size.x, work_group_size.x);
+    wgs.y = DivideRoundUp(grid_size.y, work_group_size.y);
+    work_groups_count.x = wgs[work_group_launch_order[0]];
+    work_groups_count.y = wgs[work_group_launch_order[1]];
+    work_groups_count.z = 1;
+  } else {  // grid_dimension == 3
+    int3 wgs;
+    wgs.x = DivideRoundUp(grid_size.x, work_group_size.x);
+    wgs.y = DivideRoundUp(grid_size.y, work_group_size.y);
+    wgs.z = DivideRoundUp(grid_size.z, work_group_size.z);
+    work_groups_count.x = wgs[work_group_launch_order[0]];
+    work_groups_count.y = wgs[work_group_launch_order[1]];
+    work_groups_count.z = wgs[work_group_launch_order[2]];
   }
-  return result;
+  return work_groups_count;
 }
 
 std::string GetElementWiseCode(const OperationDef& op_def,
                                bool check_src_slices) {
   std::string c;
-  c += "__kernel void main_function(\n";
+  c += "MAIN_FUNCTION(\n";
   c += "$0) {\n";
-  c += "  int X = get_global_id(0);\n";
-  c += "  int Y = get_global_id(1);\n";
-  c += "  int Z = get_global_id(2);\n";
+  c += "  int X = GLOBAL_ID_0;\n";
+  c += "  int Y = GLOBAL_ID_1;\n";
+  c += "  int Z = GLOBAL_ID_2;\n";
   c += "  if (X >= args.dst_tensor.Width() || Y >= args.dst_tensor.Height() || "
        "Z >= args.dst_tensor.Slices()) return; \n";
   if (check_src_slices) {
-    c += "  FLT4 src = (FLT4)(0.0f);\n";
+    c += "  args.src_tensor::type src = args.src_tensor::zero_value;\n";
     c += "  if (Z < args.src_tensor.Slices()) {\n";
     c += "    src = args.src_tensor.Read(X, Y, Z);\n";
     c += "  }\n";
   } else {
-    c += "  FLT4 src = args.src_tensor.Read(X, Y, Z);\n";
+    c += "  args.src_tensor::type src = args.src_tensor.Read(X, Y, Z);\n";
   }
   c += "  args.dst_tensor.Write(src, X, Y, Z);\n";
   c += "} \n";
@@ -141,6 +128,8 @@ GPUOperation::GPUOperation(GPUOperation&& operation)
       elementwise_(operation.elementwise_),
       linkable_(operation.linkable_),
       check_src_channels_size_(operation.check_src_channels_size_),
+      flops_(operation.flops_),
+      const_args_size_(operation.const_args_size_),
       definition_(std::move(operation.definition_)),
       src_(std::move(operation.src_)),
       dst_(std::move(operation.dst_)),
@@ -163,6 +152,8 @@ GPUOperation& GPUOperation::operator=(GPUOperation&& operation) {
     elementwise_ = operation.elementwise_;
     linkable_ = operation.linkable_;
     check_src_channels_size_ = operation.check_src_channels_size_;
+    flops_ = operation.flops_;
+    const_args_size_ = operation.const_args_size_;
     definition_ = std::move(operation.definition_);
     src_ = std::move(operation.src_);
     dst_ = std::move(operation.dst_);
@@ -212,6 +203,13 @@ void GPUOperation::AddSrcBuffer(const std::string& buffer_name,
   args_.AddObjectRef(buffer_name, AccessType::READ, std::move(desc_new));
 }
 
+void GPUOperation::AddSrcTexture2D(const std::string& texture_name,
+                                   const Texture2DDescriptor& desc) {
+  src_tensors_names_.push_back(texture_name);
+  auto desc_new = absl::make_unique<Texture2DDescriptor>(desc);
+  args_.AddObjectRef(texture_name, AccessType::READ, std::move(desc_new));
+}
+
 void GPUOperation::AddDstTensor(const std::string& tensor_name,
                                 const TensorDescriptor& desc) {
   dst_tensors_names_.push_back(tensor_name);
@@ -219,7 +217,7 @@ void GPUOperation::AddDstTensor(const std::string& tensor_name,
   args_.AddObjectRef(tensor_name, AccessType::WRITE, std::move(desc_new));
 }
 
-void GPUOperation::AssembleCode(const GpuInfo& gpu_info) {
+absl::Status GPUOperation::AssembleCode(const GpuInfo& gpu_info) {
   if (elementwise_) {
     auto src_desc =
         absl::make_unique<TensorDescriptor>(definition_.src_tensors[0]);
@@ -240,7 +238,39 @@ void GPUOperation::AssembleCode(const GpuInfo& gpu_info) {
     elementwise_code_ = "{\n" + code_ + "\n}\n" + elementwise_code_;
     code_ = GetElementWiseCode(definition_, check_src_channels_size_);
   }
-  code_ = GetCommonDefines(definition_.precision) + code_;
+  RETURN_IF_ERROR(args_.Compile(
+      gpu_info, {{dst_tensors_names_[0], elementwise_code_}}, &code_));
+  CalculateConstArgsSize();
+  return absl::OkStatus();
+}
+
+void GPUOperation::RecalculateWorkGroupsCount() {
+  work_groups_count_ = GetWorkGroupsCountInternal(
+      grid_dimension_, grid_size_, work_group_size_, work_group_launch_order_);
+}
+
+void GPUOperation::CalculateConstArgsSize() {
+  const_args_size_ = 0;
+  for (const auto& obj : args_.GetObjects()) {
+    const_args_size_ += obj.second->GetSizeInBytes();
+  }
+}
+
+void GPUOperation::GetPossibleDispatches(
+    TuningType tuning_type, const GpuInfo& gpu_info,
+    const KernelInfo& kernel_info,
+    std::vector<DispatchInfo>* dispatches) const {
+  std::vector<int3> work_group_sizes;
+  GetPossibleKernelWorkGroups(tuning_type, gpu_info, kernel_info,
+                              &work_group_sizes);
+  dispatches->resize(work_group_sizes.size());
+  for (int i = 0; i < work_group_sizes.size(); ++i) {
+    auto& dispatch_info = (*dispatches)[i];
+    dispatch_info.work_group_size = work_group_sizes[i];
+    dispatch_info.work_groups_count = GetWorkGroupsCountInternal(
+        grid_dimension_, grid_size_, work_group_sizes[i],
+        work_group_launch_order_);
+  }
 }
 
 void GPUOperation::GetPossibleKernelWorkGroups(

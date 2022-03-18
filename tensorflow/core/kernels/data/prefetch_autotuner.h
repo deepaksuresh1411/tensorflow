@@ -16,6 +16,10 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_PREFETCH_AUTOTUNER_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_PREFETCH_AUTOTUNER_H_
 
+#include <functional>
+#include <memory>
+
+#include "tensorflow/core/framework/model.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -39,9 +43,12 @@ namespace data {
 // PrefetchAutotuner is NOT thread safe.
 class PrefetchAutotuner {
  public:
-  explicit PrefetchAutotuner(int64 initial_buffer_size, int64 buffer_size_min);
+  explicit PrefetchAutotuner(std::shared_ptr<model::Model> model,
+                             std::shared_ptr<model::Node> prefetch_node,
+                             int64_t initial_buffer_size,
+                             int64_t buffer_size_min);
 
-  int64 buffer_limit() const { return buffer_limit_; }
+  int64_t buffer_limit() const { return buffer_limit_; }
 
   void RecordConsumption(size_t current_buffer_size);
   void RecordEmpty() { RecordConsumption(0); }
@@ -61,7 +68,9 @@ class PrefetchAutotuner {
     kDownswing,
   };
 
-  int64 buffer_limit_;
+  std::shared_ptr<model::Model> model_;
+  std::shared_ptr<model::Node> prefetch_node_;
+  int64_t buffer_limit_;
   Mode mode_ = Mode::kDisabled;
 };
 

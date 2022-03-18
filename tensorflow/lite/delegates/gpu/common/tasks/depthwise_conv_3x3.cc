@@ -18,6 +18,7 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/strings/match.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/task/work_group_picking.h"
 
@@ -30,12 +31,12 @@ DepthwiseConv3x3::DepthwiseConv3x3(const OperationDef& definition,
                                    const GpuInfo& gpu_info)
     : GPUOperation(definition), local_mem_uploads_(local_mem_uploads) {
   work_group_size_ = int3(8, 4, 1);
-  code_ = GenerateDepthwiseConvCode(definition_, weights_are_buffer,
+  code_ = GenerateDepthwiseConvCode(gpu_info, definition_, weights_are_buffer,
                                     local_mem_uploads_);
 
   if (definition_.precision == CalculationsPrecision::F16 &&
       gpu_info.IsPowerVR()) {
-    compiler_options_.push_back(CompilerOptions::kClPowervrFp16);
+    compiler_options_.push_back(CompilerOptions::kClFastRelaxedMath);
   }
 }
 
@@ -52,8 +53,8 @@ DepthwiseConv3x3& DepthwiseConv3x3::operator=(DepthwiseConv3x3&& operation) {
 }
 
 std::string DepthwiseConv3x3::GenerateDepthwiseConvCode(
-    const OperationDef& op_def, bool weights_are_buffer,
-    bool local_mem_uploads) {
+    const GpuInfo& gpu_info, const OperationDef& op_def,
+    bool weights_are_buffer, bool local_mem_uploads) {
   auto src_desc = op_def.src_tensors[0];
   src_desc.SetAddressMode(AddressMode::kZero);
   AddSrcTensor("src_tensor", src_desc);
@@ -65,26 +66,25 @@ std::string DepthwiseConv3x3::GenerateDepthwiseConvCode(
                             src_tensor_type == TensorStorageType::IMAGE_BUFFER;
 
   std::string c;
-  if (local_mem_uploads) {
+  if (local_mem_uploads && gpu_info.IsApiOpenCl()) {
     c += "__attribute__((reqd_work_group_size(8, 4, 1)))\n";
   }
-  c += "__kernel void main_function(\n";
-  c += "$0) {\n";
+  c += "MAIN_FUNCTION($0) {\n";
   if (op_def.dst_tensors[0].HasAxis(Axis::BATCH)) {
-    c += "  int linear_id = get_global_id(0);\n";
+    c += "  int linear_id = GLOBAL_ID_0;\n";
     c += "  int X = (linear_id / args.dst_tensor.Batch()) * 2;\n";
     c += "  int B = linear_id % args.dst_tensor.Batch();\n";
     c += "  args.dst_tensor.SetBatchRef(B);\n";
     c += "  args.src_tensor.SetBatchRef(B);\n";
   } else {
-    c += "  int X = get_global_id(0) * 2;\n";
+    c += "  int X = GLOBAL_ID_0 * 2;\n";
   }
-  c += "  int Y = get_global_id(1) * 2;\n";
-  c += "  int S = get_global_id(2);\n";
-  c += "   ACCUM_FLT4 r0 = (ACCUM_FLT4)(0.0f);\n";
-  c += "   ACCUM_FLT4 r1 = (ACCUM_FLT4)(0.0f);\n";
-  c += "   ACCUM_FLT4 r2 = (ACCUM_FLT4)(0.0f);\n";
-  c += "   ACCUM_FLT4 r3 = (ACCUM_FLT4)(0.0f);\n";
+  c += "  int Y = GLOBAL_ID_1 * 2;\n";
+  c += "  int S = GLOBAL_ID_2;\n";
+  c += "   ACCUM_FLT4 r0 = INIT_ACCUM_FLT4(0.0f);\n";
+  c += "   ACCUM_FLT4 r1 = INIT_ACCUM_FLT4(0.0f);\n";
+  c += "   ACCUM_FLT4 r2 = INIT_ACCUM_FLT4(0.0f);\n";
+  c += "   ACCUM_FLT4 r3 = INIT_ACCUM_FLT4(0.0f);\n";
   if (!local_mem_uploads) {
     c += "  if (X >= args.dst_tensor.Width() || Y >= args.dst_tensor.Height() "
          "|| S >= args.dst_tensor.Slices()) { \n";
@@ -93,10 +93,18 @@ std::string DepthwiseConv3x3::GenerateDepthwiseConvCode(
   }
   if (local_mem_uploads) {
     c += "  __local FLT4 f[10];\n";
-    c += "  event_t e = async_work_group_copy(f, args.weights.GetPtr() + S * "
-         "10, 10, 0);\n";
-    c += "  wait_group_events(1, &e);\n";
-  } else if (weights_are_buffer) {
+    if (gpu_info.IsApiOpenCl() && gpu_info.IsPowerVR()) {
+      c += "  event_t e = async_work_group_copy(f, args.weights.GetPtr() + S * "
+           "10, 10, 0);\n";
+      c += "  wait_group_events(1, &e);\n";
+    } else {
+      c += "  int local_id = LOCAL_ID_1 * 8 + LOCAL_ID_0;\n";
+      c += "  if (local_id < 10) {\n";
+      c += "    f[local_id] = args.weights.Read(S * 10 + local_id);\n";
+      c += "  }\n";
+      c += "  LOCAL_MEM_BARRIER;\n";
+    }
+  } else if (weights_are_buffer && gpu_info.SupportsPointersInKernels()) {
     c += "  __global FLT4* f = args.weights.GetPtr() + S * 10;\n";
   }
   c += "  FLT4 s0;\n";
@@ -143,7 +151,8 @@ std::string DepthwiseConv3x3::GenerateDepthwiseConvCode(
     c += "  y1 = clamp(y1, 0, args.dst_tensor.Height() - 1);\n";
     c += "  y2 = clamp(y2, 0, args.dst_tensor.Height() - 1);\n";
     c += "  y3 = clamp(y3, 0, args.dst_tensor.Height() - 1);\n";
-    if (src_tensor_type == TensorStorageType::BUFFER) {
+    if (src_tensor_type == TensorStorageType::BUFFER &&
+        gpu_info.SupportsPointersInKernels()) {
       c += "  __global FLT4* src_loc = "
            "args.src_tensor.GetPtrWithSliceOffset(S);\n";
     }
@@ -157,38 +166,45 @@ std::string DepthwiseConv3x3::GenerateDepthwiseConvCode(
     yc[3] = "y3";
   }
   if (local_mem_uploads || weights_are_buffer) {
-    W[0] = "f[0]";
-    W[1] = "f[1]";
-    W[2] = "f[2]";
-    W[3] = "f[3]";
-    W[4] = "f[4]";
-    W[5] = "f[5]";
-    W[6] = "f[6]";
-    W[7] = "f[7]";
-    W[8] = "f[8]";
-    bias = "f[9]";
+    const bool use_direct_buffer =
+        !local_mem_uploads && !gpu_info.SupportsPointersInKernels();
+    const std::string fetch_start =
+        use_direct_buffer ? "args.weights.Read(S * 10 + " : "f[";
+    const std::string fetch_end = use_direct_buffer ? ")" : "]";
+    W[0] = fetch_start + "0" + fetch_end;
+    W[1] = fetch_start + "1" + fetch_end;
+    W[2] = fetch_start + "2" + fetch_end;
+    W[3] = fetch_start + "3" + fetch_end;
+    W[4] = fetch_start + "4" + fetch_end;
+    W[5] = fetch_start + "5" + fetch_end;
+    W[6] = fetch_start + "6" + fetch_end;
+    W[7] = fetch_start + "7" + fetch_end;
+    W[8] = fetch_start + "8" + fetch_end;
+    bias = fetch_start + "9" + fetch_end;
   }
   auto read_4x_line = [&](int y) {
-    if (src_tensor_type == TensorStorageType::BUFFER) {
+    if (src_tensor_type == TensorStorageType::BUFFER &&
+        gpu_info.SupportsPointersInKernels()) {
       const std::string y_in = "y" + std::to_string(y) + "_in";
       c += "    s0 = src_loc[args.src_tensor.GetWHOffset(" + xc[0] + ", " +
-           yc[y] + ")] * (FLT)(x0_in && " + y_in + ");\n";
+           yc[y] + ")] * INIT_FLT(x0_in && " + y_in + ");\n";
       c += "    s1 = src_loc[args.src_tensor.GetWHOffset(" + xc[1] + ", " +
-           yc[y] + ")] * (FLT)(x1_in && " + y_in + ");\n";
+           yc[y] + ")] * INIT_FLT(x1_in && " + y_in + ");\n";
       c += "    s2 = src_loc[args.src_tensor.GetWHOffset(" + xc[2] + ", " +
-           yc[y] + ")] * (FLT)(x2_in && " + y_in + ");\n";
+           yc[y] + ")] * INIT_FLT(x2_in && " + y_in + ");\n";
       c += "    s3 = src_loc[args.src_tensor.GetWHOffset(" + xc[3] + ", " +
-           yc[y] + ")] * (FLT)(x3_in && " + y_in + ");\n";
-    } else if (src_tensor_type == TensorStorageType::IMAGE_BUFFER) {
+           yc[y] + ")] * INIT_FLT(x3_in && " + y_in + ");\n";
+    } else if (src_tensor_type == TensorStorageType::IMAGE_BUFFER ||
+               src_tensor_type == TensorStorageType::BUFFER) {
       const std::string y_in = "y" + std::to_string(y) + "_in";
       c += "    s0 = args.src_tensor.Read(" + xc[0] + ", " + yc[y] +
-           ", S) * (FLT)(x0_in && " + y_in + ");\n";
+           ", S) * INIT_FLT(x0_in && " + y_in + ");\n";
       c += "    s1 = args.src_tensor.Read(" + xc[1] + ", " + yc[y] +
-           ", S) * (FLT)(x1_in && " + y_in + ");\n";
+           ", S) * INIT_FLT(x1_in && " + y_in + ");\n";
       c += "    s2 = args.src_tensor.Read(" + xc[2] + ", " + yc[y] +
-           ", S) * (FLT)(x2_in && " + y_in + ");\n";
+           ", S) * INIT_FLT(x2_in && " + y_in + ");\n";
       c += "    s3 = args.src_tensor.Read(" + xc[3] + ", " + yc[y] +
-           ", S) * (FLT)(x3_in && " + y_in + ");\n";
+           ", S) * INIT_FLT(x3_in && " + y_in + ");\n";
     } else {
       c += "    s0 = args.src_tensor.Read(" + xc[0] + ", " + yc[y] + ", S);\n";
       c += "    s1 = args.src_tensor.Read(" + xc[1] + ", " + yc[y] + ", S);\n";
@@ -260,22 +276,22 @@ std::string DepthwiseConv3x3::GenerateDepthwiseConvCode(
   c += "  if(X + 0 < args.dst_tensor.Width() && Y + 0 < "
        "args.dst_tensor.Height()) {\n";
   c += "    FLT4 result = TO_FLT4(r0);\n";
-  c += "    args.dst_tensor.Write(result, X + 0, Y + 0, S)\n";
+  c += "    args.dst_tensor.Write(result, X + 0, Y + 0, S);\n";
   c += "  }\n";
   c += "  if(X + 1 < args.dst_tensor.Width() && Y + 0 < "
        "args.dst_tensor.Height()) {\n";
   c += "    FLT4 result = TO_FLT4(r1);\n";
-  c += "    args.dst_tensor.Write(result, X + 1, Y + 0, S)\n";
+  c += "    args.dst_tensor.Write(result, X + 1, Y + 0, S);\n";
   c += "  }\n";
   c += "  if(X + 0 < args.dst_tensor.Width() && Y + 1 < "
        "args.dst_tensor.Height()) {\n";
   c += "    FLT4 result = TO_FLT4(r2);\n";
-  c += "    args.dst_tensor.Write(result, X + 0, Y + 1, S)\n";
+  c += "    args.dst_tensor.Write(result, X + 0, Y + 1, S);\n";
   c += "  }\n";
   c += "  if(X + 1 < args.dst_tensor.Width() && Y + 1 < "
        "args.dst_tensor.Height()) {\n";
   c += "    FLT4 result = TO_FLT4(r3);\n";
-  c += "    args.dst_tensor.Write(result, X + 1, Y + 1, S)\n";
+  c += "    args.dst_tensor.Write(result, X + 1, Y + 1, S);\n";
   c += "  }\n";
   c += "}\n";
 
@@ -300,7 +316,16 @@ void DepthwiseConv3x3::GetPossibleKernelWorkGroups(
   }
 }
 
-bool IsDepthwiseConv3x3Supported(const DepthwiseConvolution2DAttributes& attr) {
+bool IsDepthwiseConv3x3Supported(const GpuInfo& gpu_info,
+                                 const DepthwiseConvolution2DAttributes& attr) {
+  if (gpu_info.IsApiOpenCl() && gpu_info.IsAdreno()) {
+    const std::string kBadDriver =
+        "OpenCL 2.0 QUALCOMM build: commit #7daed58 changeid #I7ece6fe30d "
+        "Date: 10/19/16";
+    if (absl::StrContains(gpu_info.opencl_info.platform_version, kBadDriver)) {
+      return false;
+    }
+  }
   return attr.weights.shape.o == 1 && attr.dilations.w == 1 &&
          attr.dilations.h == 1 && attr.weights.shape.w == 3 &&
          attr.weights.shape.h == 3 && attr.strides.w == 1 &&
@@ -312,8 +337,14 @@ bool IsDepthwiseConv3x3Supported(const DepthwiseConvolution2DAttributes& attr) {
 DepthwiseConv3x3 CreateDepthwiseConv3x3(
     const GpuInfo& gpu_info, const OperationDef& definition,
     const DepthwiseConvolution2DAttributes& attr) {
-  bool weights_are_buffer = gpu_info.IsPowerVR() || gpu_info.IsMali();
+  bool weights_are_buffer = !gpu_info.SupportsImages() ||
+                            gpu_info.IsPowerVR() || gpu_info.IsMali() ||
+                            gpu_info.IsApple();
   bool local_mem_uploads = weights_are_buffer && gpu_info.IsPowerVR();
+  if (gpu_info.IsApple() &&
+      gpu_info.apple_info.IsLocalMemoryPreferredOverGlobal()) {
+    local_mem_uploads = true;
+  }
   DepthwiseConv3x3 result(definition, weights_are_buffer, local_mem_uploads,
                           gpu_info);
   result.UploadWeightsAndBiases(attr.weights, attr.bias, weights_are_buffer);

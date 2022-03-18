@@ -2,14 +2,13 @@
 #   Contains the legacy TF layers (internal TensorFlow version).
 
 load("//tensorflow:tensorflow.bzl", "tf_py_test")
-load("//tensorflow:tensorflow.bzl", "cuda_py_test")
 
 package(
     default_visibility = [
         "//tensorflow:__subpackages__",
         "//tensorflow/python/keras:__subpackages__",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 filegroup(
@@ -23,8 +22,9 @@ py_library(
     srcs = [
         "__init__.py",
         "base.py",
+        "variable_scope_shim.py",
     ],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
         "//tensorflow/python:dtypes",
         "//tensorflow/python:framework_ops",
@@ -42,6 +42,7 @@ py_library(
 py_library(
     name = "convolutional",
     srcs = ["convolutional.py"],
+    srcs_version = "PY3",
     deps = [
         ":layers_base",
         "//tensorflow/python:init_ops",
@@ -53,6 +54,7 @@ py_library(
 py_library(
     name = "core",
     srcs = ["core.py"],
+    srcs_version = "PY3",
     deps = [
         ":layers_base",
         "//tensorflow/python:init_ops",
@@ -62,19 +64,9 @@ py_library(
 )
 
 py_library(
-    name = "normalization",
-    srcs = ["normalization.py"],
-    deps = [
-        ":layers_base",
-        "//tensorflow/python:init_ops",
-        "//tensorflow/python:util",
-        "//tensorflow/python/keras/layers:normalization",
-    ],
-)
-
-py_library(
     name = "pooling",
     srcs = ["pooling.py"],
+    srcs_version = "PY3",
     deps = [
         ":layers_base",
         "//tensorflow/python:util",
@@ -179,29 +171,33 @@ tf_py_test(
     ],
 )
 
-cuda_py_test(
-    name = "normalization_test",
-    size = "medium",
-    srcs = ["normalization_test.py"],
-    main = "normalization_test.py",
+tf_py_test(
+    name = "variable_scope_shim_test",
+    size = "small",
+    srcs = ["variable_scope_shim_test.py"],
+    main = "variable_scope_shim_test.py",
     python_version = "PY3",
-    shard_count = 10,
+    tags = ["no_windows"],
     deps = [
-        ":convolutional",
-        ":normalization",
-        "//tensorflow/core:protos_all_py",
+        ":core",
+        ":layers_base",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
+        "//tensorflow/python:constant_op",
         "//tensorflow/python:dtypes",
         "//tensorflow/python:extra_py_tests_deps",
         "//tensorflow/python:framework_ops",
         "//tensorflow/python:framework_test_lib",
         "//tensorflow/python:init_ops",
         "//tensorflow/python:math_ops",
+        "//tensorflow/python:partitioned_variables",
         "//tensorflow/python:random_ops",
-        "//tensorflow/python:saver",
-        "//tensorflow/python:training_lib",
+        "//tensorflow/python:state_ops",
         "//tensorflow/python:variable_scope",
-        "//tensorflow/python:variables",
+        "//tensorflow/python/eager:context",
+        "//tensorflow/python/eager:def_function",
+        "//tensorflow/python/keras:combinations",
+        "//tensorflow/python/keras/engine:base_layer",
+        "//tensorflow/python/keras/engine:input_spec",
     ],
 )

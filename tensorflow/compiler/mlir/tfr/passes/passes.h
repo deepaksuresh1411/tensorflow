@@ -27,12 +27,16 @@ namespace TFR {
 
 // Scans the func op and adds all the canonicalization patterns of the ops
 // except the tf ops, inside the function.
-void populateCanonicalizationPatterns(FuncOp func,
-                                      OwningRewritePatternList &patterns);
+void populateCanonicalizationPatterns(FuncOp func, RewritePatternSet &patterns);
 
 // Decompose ops.
 std::unique_ptr<OperationPass<FuncOp>> CreateDecomposeTFOpsPass(
     llvm::Optional<ModuleOp> tfr_module = llvm::None);
+
+// Rewrites quantized operands and results with their storage types.
+// This pass should be run at module level after decomposition, if there are
+// quantized operands or results.
+std::unique_ptr<OperationPass<ModuleOp>> CreateRewriteQuantizedIOPass();
 
 // Raise to TF ops.
 std::unique_ptr<OperationPass<FuncOp>> CreateRaiseToTFOpsPass(

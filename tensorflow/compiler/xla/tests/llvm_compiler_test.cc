@@ -53,18 +53,16 @@ class GpuDummyCompiler : public GpuCompiler {
     return Status::OK();
   }
 
-  GpuVersion GetGpuVersion(se::StreamExecutor* stream_exec) { return 0; }
+  GpuVersion GetGpuVersion(se::StreamExecutor*) override {
+    return se::CudaComputeCapability{0, 0};
+  }
 
-  StatusOr<std::pair<std::string, std::vector<uint8>>> CompileTargetBinary(
-      const HloModule* hlo_module, llvm::Module* llvm_module,
-      GpuVersion gpu_version, se::StreamExecutor* stream_exec,
-      bool relocatable) {
-    if (user_post_optimization_hook_) {
-      user_post_optimization_hook_(*llvm_module);
-    }
-
-    std::vector<uint8> compiled_results;
-    return std::pair<std::string, std::vector<uint8>>(
+  StatusOr<std::pair<std::string, std::vector<uint8_t>>> CompileTargetBinary(
+      const HloModuleConfig& module_config, llvm::Module* llvm_module,
+      GpuVersion gpu_version, se::StreamExecutor* stream_exec, bool relocatable,
+      const HloModule* debug_module) {
+    std::vector<uint8_t> compiled_results;
+    return std::pair<std::string, std::vector<uint8_t>>(
         "", std::move(compiled_results));
   }
 };
@@ -75,7 +73,7 @@ namespace {
 class LLVMCompilerTest : public ::testing::Test {
  public:
   void SetUp() override {
-    Platform *platform = FindPlatform();
+    Platform* platform = FindPlatform();
     ASSERT_NE(platform, nullptr);
 
     BackendOptions backend_options;
@@ -91,18 +89,18 @@ class LLVMCompilerTest : public ::testing::Test {
  protected:
   using Platform = se::Platform;
 
-  explicit LLVMCompilerTest(string platform_name)
+  explicit LLVMCompilerTest(std::string platform_name)
       : platform_name_(std::move(platform_name)) {}
 
-  void TestCompilerHooks(LLVMCompiler *compiler) {
+  void TestCompilerHooks(LLVMCompiler* compiler) {
     int pre_opt_hook_call_count = 0;
     int post_opt_hook_call_count = 0;
 
-    auto pre_opt_hook = [&pre_opt_hook_call_count](const llvm::Module &) {
+    auto pre_opt_hook = [&pre_opt_hook_call_count](const llvm::Module&) {
       ++pre_opt_hook_call_count;
       return Status::OK();
     };
-    auto post_opt_hook = [&post_opt_hook_call_count](const llvm::Module &) {
+    auto post_opt_hook = [&post_opt_hook_call_count](const llvm::Module&) {
       ++post_opt_hook_call_count;
       return Status::OK();
     };
@@ -129,7 +127,7 @@ class LLVMCompilerTest : public ::testing::Test {
     EXPECT_EQ(1, post_opt_hook_call_count);
   }
 
-  void TestMultiModuleCompilation(LLVMCompiler *compiler) {
+  void TestMultiModuleCompilation(LLVMCompiler* compiler) {
     HloComputation::Builder builder(TestName());
     builder.AddInstruction(
         HloInstruction::CreateConstant(LiteralUtil::CreateR0<float>(42.0)));
@@ -141,7 +139,7 @@ class LLVMCompilerTest : public ::testing::Test {
     module_group->push_back(hlo_module->Clone());
     module_group->push_back(std::move(hlo_module));
 
-    std::vector<std::vector<se::StreamExecutor *>> executors;
+    std::vector<std::vector<se::StreamExecutor*>> executors;
     executors.push_back({backend_->default_stream_executor()});
     executors.push_back({backend_->default_stream_executor()});
 
@@ -151,15 +149,15 @@ class LLVMCompilerTest : public ::testing::Test {
   }
 
  private:
-  Platform *FindPlatform() {
+  Platform* FindPlatform() {
     auto status_or_platform = PlatformUtil::GetPlatform(platform_name_);
     return status_or_platform.ok() ? status_or_platform.ValueOrDie() : nullptr;
   }
 
-  string platform_name_;
+  std::string platform_name_;
   std::unique_ptr<Backend> backend_;
 
-  static string TestName() {
+  static std::string TestName() {
     return ::testing::UnitTest::GetInstance()->current_test_info()->name();
   }
 

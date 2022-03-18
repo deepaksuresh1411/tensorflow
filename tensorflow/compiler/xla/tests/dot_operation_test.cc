@@ -33,7 +33,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/tests/test_utils.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
-#include "tensorflow/core/platform/types.h"
 
 namespace xla {
 namespace {
@@ -43,26 +42,29 @@ class DotOperationTest : public ClientLibraryTestBase {
   ErrorSpec error_spec_{0.0001, 1e-5};
 };
 
-#if defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16) && \
-    defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT64)
-using TypesF16F32 = ::testing::Types<float>;
-using TypesF16F32F64 = ::testing::Types<float>;
-using TypesF16F32F64CF64 = ::testing::Types<float>;
-#elif !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16) && \
-    !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT64)
-using TypesF16F32 = ::testing::Types<Eigen::half, float>;
-using TypesF16F32F64 = ::testing::Types<Eigen::half, float, double>;
-using TypesF16F32F64CF64 =
-    ::testing::Types<Eigen::half, float, double, complex64>;
-#elif !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16) && \
-    defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT64) &&    \
-    defined(XLA_BACKEND_DOES_NOT_SUPPORT_COMPLEX)
-using TypesF16F32 = ::testing::Types<Eigen::half, float>;
-using TypesF16F32F64 = ::testing::Types<Eigen::half, float>;
-using TypesF16F32F64CF64 = ::testing::Types<Eigen::half, float>;
-#else
-#error "Situation not handled yet"
+using TypesF16F32 = ::testing::Types<
+#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16)
+    Eigen::half,
 #endif
+    float>;
+
+using TypesF16F32F64 = ::testing::Types<
+#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16)
+    Eigen::half,
+#endif
+#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT64)
+    double,
+#endif
+    float>;
+
+using TypesF16F32F64CF64 = ::testing::Types<
+#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT16)
+    Eigen::half,
+#endif
+#if !defined(XLA_BACKEND_DOES_NOT_SUPPORT_FLOAT64)
+    double, complex64,
+#endif
+    float>;
 
 // Check that we can safely pass an input tuple's elements to a dot operation.
 XLA_TEST_F(DotOperationTest, DotOfInputTupleElem) {
@@ -139,7 +141,7 @@ XLA_TYPED_TEST(DotOperationTest_F16F32F64, VectorDot) {
                                         this->error_spec_);
 }
 
-std::vector<int64> MinorToMajorForIsRowMajor(bool row_major) {
+std::vector<int64_t> MinorToMajorForIsRowMajor(bool row_major) {
   return {row_major ? 1 : 0, row_major ? 0 : 1};
 }
 
@@ -263,7 +265,7 @@ struct DotTestParam {
   bool addend_row_major;
 };
 
-string PrintDotTestParam(
+std::string PrintDotTestParam(
     const ::testing::TestParamInfo<DotTestParam>& test_param) {
   const DotTestParam& param = test_param.param;
   if (param.has_addend) {
@@ -302,13 +304,13 @@ template <>
 void ParametricDotTest::ComputeAndCompareR2WithError<Eigen::half>(
     XlaBuilder* builder, const Array2D<Eigen::half>& expected,
     absl::Span<GlobalData* const> arguments) {
-  ErrorSpec error_spec(0.3, 5e-3);
+  ErrorSpec error_spec(0.3, 7e-3);
   ComputeAndCompareR2(builder, expected, arguments, error_spec);
 }
 
 template <>
-void ParametricDotTest::ComputeAndCompareR2WithError<int32>(
-    XlaBuilder* builder, const Array2D<int32>& expected,
+void ParametricDotTest::ComputeAndCompareR2WithError<int32_t>(
+    XlaBuilder* builder, const Array2D<int32_t>& expected,
     absl::Span<GlobalData* const> arguments) {
   ComputeAndCompareR2(builder, expected, arguments);
 }
@@ -422,7 +424,7 @@ XLA_TEST_P(ParametricDotTest, TestC64) { TestImpl<std::complex<float>>(); }
 #ifndef XLA_BACKEND_DOES_NOT_SUPPORT_COMPLEX128
 XLA_TEST_P(ParametricDotTest, TestC128) { TestImpl<std::complex<double>>(); }
 #endif
-XLA_TEST_P(ParametricDotTest, TestS32) { TestImpl<int32>(); }
+XLA_TEST_P(ParametricDotTest, TestS32) { TestImpl<int32_t>(); }
 
 INSTANTIATE_TEST_CASE_P(DotTests, ParametricDotTest,
                         ::testing::ValuesIn(CreateDotTestParameters()),
@@ -434,7 +436,7 @@ class ParametricDotTestWithoutLayoutAssignment : public ParametricDotTest {
     execution_options_.mutable_debug_options()->add_xla_disable_hlo_passes(
         "layout-assignment");
     execution_options_.mutable_debug_options()->add_xla_disable_hlo_passes(
-        "tiling-assignment");
+        "hlo-verifier");
     // Disable algebraic simplification because the pass may replace a dot
     // instruction with a layout-changing multiplication instruction.
     execution_options_.mutable_debug_options()->add_xla_disable_hlo_passes(
@@ -601,7 +603,9 @@ XLA_TYPED_TEST(DotOperationTestForBatchMatMul, Types) {
 
   // Slice batches into individual matrices and multiply them.
   std::vector<XlaOp> out_slices;
-  for (int i = 0; i < 4; ++i) {
+  const auto n = 4;
+  out_slices.reserve(n);
+  for (int i = 0; i < n; ++i) {
     // Slice off individual matrices and reshape to 2D tensors.
     auto x_slice = Slice(x_flat, {i, 0, 0}, {i + 1, 2, 2}, {1, 1, 1});
     x_slice = Reshape(x_slice, {0, 1, 2}, {2, 2});
@@ -957,8 +961,8 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSClassicMM) {
   XlaBuilder builder(TestName());
   auto lhs_constant = ConstantR2FromArray2D(&builder, *constant_lhs_array);
   auto rhs_constant = ConstantR2FromArray2D(&builder, *constant_rhs_array);
-  auto one = ConstantR0<int32>(&builder, 1);
-  auto zero = ConstantR0<int32>(&builder, 0);
+  auto one = ConstantR0<int32_t>(&builder, 1);
+  auto zero = ConstantR0<int32_t>(&builder, 0);
   auto dynamic_slice = DynamicSlice(lhs_constant, {one, zero}, {1, 6});
 
   DotDimensionNumbers dot_dnums;
@@ -985,8 +989,8 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSClassicMM) {
   XlaBuilder builder(TestName());
   auto lhs_constant = ConstantR2FromArray2D(&builder, *constant_lhs_array);
   auto rhs_constant = ConstantR2FromArray2D(&builder, *constant_rhs_array);
-  auto zero = ConstantR0<int32>(&builder, 0);
-  auto one = ConstantR0<int32>(&builder, 1);
+  auto zero = ConstantR0<int32_t>(&builder, 0);
+  auto one = ConstantR0<int32_t>(&builder, 1);
   auto dynamic_slice = DynamicSlice(rhs_constant, {zero, one}, {6, 1});
 
   DotDimensionNumbers dot_dnums;
@@ -1015,8 +1019,8 @@ XLA_TEST_F(DotOperationTest,
   XlaBuilder builder(TestName());
   auto lhs_constant = ConstantR2FromArray2D(&builder, *constant_lhs_array);
   auto rhs_constant = ConstantR2FromArray2D(&builder, *constant_rhs_array);
-  auto zero = ConstantR0<int32>(&builder, 0);
-  auto one = ConstantR0<int32>(&builder, 1);
+  auto zero = ConstantR0<int32_t>(&builder, 0);
+  auto one = ConstantR0<int32_t>(&builder, 1);
   auto dynamic_slice = DynamicSlice(lhs_constant, {zero, one}, {6, 1});
 
   DotDimensionNumbers dot_dnums;
@@ -1043,8 +1047,8 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSReverseMM) {
   XlaBuilder builder(TestName());
   auto lhs_constant = ConstantR2FromArray2D(&builder, *constant_lhs_array);
   auto rhs_constant = ConstantR2FromArray2D(&builder, *constant_rhs_array);
-  auto zero = ConstantR0<int32>(&builder, 0);
-  auto one = ConstantR0<int32>(&builder, 1);
+  auto zero = ConstantR0<int32_t>(&builder, 0);
+  auto one = ConstantR0<int32_t>(&builder, 1);
   auto dynamic_slice = DynamicSlice(rhs_constant, {one, zero}, {1, 6});
 
   DotDimensionNumbers dot_dnums;
@@ -1076,8 +1080,8 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSRows) {
   XlaBuilder builder(TestName());
   auto lhs_constant = ConstantR2FromArray2D(&builder, *constant_lhs_array);
   auto rhs_constant = ConstantR2FromArray2D(&builder, *constant_rhs_array);
-  auto zero = ConstantR0<int32>(&builder, 0);
-  auto one = ConstantR0<int32>(&builder, 1);
+  auto zero = ConstantR0<int32_t>(&builder, 0);
+  auto one = ConstantR0<int32_t>(&builder, 1);
   auto dynamic_slice = DynamicSlice(lhs_constant, {zero, one}, {6, 1});
 
   DotDimensionNumbers dot_dnums;
@@ -1109,8 +1113,8 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSRows) {
   XlaBuilder builder(TestName());
   auto lhs_constant = ConstantR2FromArray2D(&builder, *constant_lhs_array);
   auto rhs_constant = ConstantR2FromArray2D(&builder, *constant_rhs_array);
-  auto zero = ConstantR0<int32>(&builder, 0);
-  auto one = ConstantR0<int32>(&builder, 1);
+  auto zero = ConstantR0<int32_t>(&builder, 0);
+  auto one = ConstantR0<int32_t>(&builder, 1);
   auto dynamic_slice = DynamicSlice(rhs_constant, {zero, one}, {6, 1});
 
   DotDimensionNumbers dot_dnums;
@@ -1134,8 +1138,8 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstRHSCols) {
   XlaBuilder builder(TestName());
   auto lhs_constant = ConstantR2FromArray2D(&builder, *constant_lhs_array);
   auto rhs_constant = ConstantR2FromArray2D(&builder, *constant_rhs_array);
-  auto zero = ConstantR0<int32>(&builder, 0);
-  auto one = ConstantR0<int32>(&builder, 1);
+  auto zero = ConstantR0<int32_t>(&builder, 0);
+  auto one = ConstantR0<int32_t>(&builder, 1);
   auto dynamic_slice = DynamicSlice(lhs_constant, {one, zero}, {1, 6});
 
   DotDimensionNumbers dot_dnums;
@@ -1159,8 +1163,8 @@ XLA_TEST_F(DotOperationTest, DotOfGatherOptimizationWithConstLHSCols) {
   XlaBuilder builder(TestName());
   auto lhs_constant = ConstantR2FromArray2D(&builder, *constant_lhs_array);
   auto rhs_constant = ConstantR2FromArray2D(&builder, *constant_rhs_array);
-  auto zero = ConstantR0<int32>(&builder, 0);
-  auto one = ConstantR0<int32>(&builder, 1);
+  auto zero = ConstantR0<int32_t>(&builder, 0);
+  auto one = ConstantR0<int32_t>(&builder, 1);
   auto dynamic_slice = DynamicSlice(rhs_constant, {one, zero}, {1, 6});
 
   DotDimensionNumbers dot_dnums;
@@ -1196,7 +1200,7 @@ XLA_TEST_F(DotOperationTest, DotRank2AndRank2NonDefaultContractionDims) {
 }
 
 using EinsumParamType =
-    std::tuple<std::vector<int64>, std::vector<int64>, string>;
+    std::tuple<std::vector<int64_t>, std::vector<int64_t>, std::string>;
 class EinsumTest : public DotOperationTest,
                    public ::testing::WithParamInterface<EinsumParamType> {};
 XLA_TEST_P(EinsumTest, SimpleEinsumTest) {
@@ -1210,7 +1214,7 @@ XLA_TEST_P(EinsumTest, SimpleEinsumTest) {
           .ValueOrDie(),
       &builder);
   auto config = std::get<2>(GetParam());
-  if (config.find(",") == config.npos) {
+  if (config.find(',') == config.npos) {
     Einsum(x, config);
   } else {
     Einsum(x, y, config);
@@ -1219,7 +1223,7 @@ XLA_TEST_P(EinsumTest, SimpleEinsumTest) {
 }
 
 std::vector<EinsumParamType> GetEinsumTestCases() {
-  using v = std::vector<int64>;
+  using v = std::vector<int64_t>;
   using p = EinsumParamType;
   std::vector<p> test_cases = {
       p{v{5, 6}, v{6, 7}, "mk,kn->mn"},
@@ -1284,8 +1288,8 @@ std::vector<EinsumParamType> GetEinsumTestCases() {
 INSTANTIATE_TEST_SUITE_P(Einsum, EinsumTest,
                          ::testing::ValuesIn(GetEinsumTestCases()));
 
-using BatchDotParamType =
-    std::tuple<std::vector<int64>, std::vector<int64>, std::vector<int64>>;
+using BatchDotParamType = std::tuple<std::vector<int64_t>, std::vector<int64_t>,
+                                     std::vector<int64_t>>;
 class BatchDotTest : public DotOperationTest,
                      public ::testing::WithParamInterface<BatchDotParamType> {};
 XLA_TEST_P(BatchDotTest, BroadcastingBatchDotTest) {
@@ -1305,7 +1309,7 @@ XLA_TEST_P(BatchDotTest, BroadcastingBatchDotTest) {
 }
 
 std::vector<BatchDotParamType> GetBatchDotTestCases() {
-  using v = std::vector<int64>;
+  using v = std::vector<int64_t>;
   using p = BatchDotParamType;
   std::vector<p> test_cases = {
       p{v{5, 6}, v{6, 7}, v{5, 7}},
@@ -1465,7 +1469,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, DISABLED_ON_CPU(U16IotaDot)) {
+XLA_TEST_F(DotOperationTextTest, U16IotaDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1481,7 +1485,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, DISABLED_ON_CPU(U16IotaSquaredDot)) {
+XLA_TEST_F(DotOperationTextTest, U16IotaSquaredDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1500,7 +1504,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, DISABLED_ON_CPU(S16IotaDot)) {
+XLA_TEST_F(DotOperationTextTest, S16IotaDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1515,7 +1519,7 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, DISABLED_ON_CPU(S16IotaSquaredDot)) {
+XLA_TEST_F(DotOperationTextTest, S16IotaSquaredDot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1534,7 +1538,22 @@ ENTRY SmallIntegerDot {
   EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
 }
 
-XLA_TEST_F(DotOperationTextTest, DISABLED_ON_CPU(S8Dot)) {
+XLA_TEST_F(DotOperationTextTest, PREDDot) {
+  absl::string_view hlo_string =
+      R"(
+HloModule SmallIntegerDot
+
+ENTRY SmallIntegerDot {
+  arg0 = pred[20,2] parameter(0)
+  arg1 = pred[2,20] parameter(1)
+  ROOT dot = pred[20,20] dot(arg0, arg1), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+}
+)";
+
+  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{0, 0}));
+}
+
+XLA_TEST_F(DotOperationTextTest, S8Dot) {
   absl::string_view hlo_string =
       R"(
 HloModule SmallIntegerDot
@@ -1597,6 +1616,23 @@ ENTRY MatrixVectorComplex {
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_module,
                           ParseAndReturnUnverifiedModule(hlo_string));
   EXPECT_TRUE(RunAndCompare(std::move(hlo_module), ErrorSpec{4e-3, 4e-3}));
+}
+
+XLA_TEST_F(DotOperationTextTest, MatrixVectorBF16) {
+  absl::string_view hlo_string =
+      R"(
+HloModule MatrixVectorBF16
+
+ENTRY MatrixVectorBF16 {
+  p0 = bf16[128] parameter(0)
+  p1 = bf16[128,256] parameter(1)
+  p2 = bf16[256] parameter(2)
+  dot = bf16[256] dot(p0, p1), lhs_contracting_dims={0}, rhs_contracting_dims={0}
+  ROOT add = bf16[256] add(dot, p2)
+}
+)";
+
+  EXPECT_TRUE(RunAndCompare(hlo_string, ErrorSpec{4e-3, 4e-3}));
 }
 
 // Regression test for b/138155357, where we were incorrectly creating a dot-add
@@ -1775,9 +1811,7 @@ ENTRY MatrixVectorComplex {
 //   dot(reshape(A), reshape(transpose(reshape(Const)))),
 // and then fold the reshape and transpose on the Const side.
 // We can compare performance with and without algsimp pass to see the impact.
-void DOT_ReorderContracting(int num_iters) {
-  tensorflow::testing::StopTiming();
-
+void DOT_ReorderContracting(::testing::benchmark::State& state) {
   se::Platform* platform = PlatformUtil::GetDefaultPlatform().ValueOrDie();
   auto executors = PlatformUtil::GetStreamExecutors(platform).ValueOrDie();
   se::StreamExecutorMemoryAllocator allocator(platform, executors);
@@ -1789,10 +1823,10 @@ void DOT_ReorderContracting(int num_iters) {
 
   int device_ordinal = client->default_device_ordinal();
 
-  const int64 d0 = 128;
-  const int64 d1 = 128;
-  const int64 d2 = 128;
-  const int64 d3 = 128;
+  const int64_t d0 = 128;
+  const int64_t d1 = 128;
+  const int64_t d2 = 128;
+  const int64_t d3 = 128;
 
   Array3D<float> input_arr(d0, d1, d2);
   Array2D<float> const_arr(d1 * d2, d3);
@@ -1828,17 +1862,14 @@ void DOT_ReorderContracting(int num_iters) {
     ASSERT_IS_OK(executable->Run({&buffer0}, options));
   }
 
-  const int64 total_bytes = d0 * d1 * d2 + d1 * d2 * d3 + d0 * d3;
-  tensorflow::testing::BytesProcessed(static_cast<int64>(num_iters) *
-                                      total_bytes * sizeof(float));
-  tensorflow::testing::UseRealTime();
-  tensorflow::testing::StartTiming();
-  for (int i = 0; i < num_iters; ++i) {
+  const int64_t total_bytes = d0 * d1 * d2 + d1 * d2 * d3 + d0 * d3;
+  for (auto s : state) {
     ASSERT_IS_OK(executable->Run({&buffer0}, options));
   }
+  state.SetBytesProcessed(state.iterations() * total_bytes * sizeof(float));
 }
 
-BENCHMARK(DOT_ReorderContracting);
+BENCHMARK(DOT_ReorderContracting)->UseRealTime();
 
 }  // namespace
 }  // namespace xla

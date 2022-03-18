@@ -15,12 +15,13 @@ limitations under the License.
 
 #include "llvm/ADT/SmallVector.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/StandardTypes.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -57,9 +58,10 @@ Value CalculateShapeValue(Location loc, Value operand,
   int64_t rank = result_type.getRank();
   shape_values.reserve(rank);
   for (int64_t i = 0; i < rank; ++i) {
-    shape_values.push_back(rewriter.create<mlir::DimOp>(loc, operand, i));
+    shape_values.push_back(
+        rewriter.create<mlir::tensor::DimOp>(loc, operand, i));
   }
-  return rewriter.create<TensorFromElementsOp>(loc, shape_values);
+  return rewriter.create<tensor::FromElementsOp>(loc, shape_values);
 }
 
 Value MaterializeEpsilon(Operation* op, FloatAttr epsilon_attr,
@@ -175,8 +177,8 @@ class UnfuseBatchNormInferencePattern
 // do not have special support for fused batchnorm to use simpler arithmetic
 // primitives.
 void PopulateUnfuseBatchNormPatterns(MLIRContext* context,
-                                     OwningRewritePatternList* patterns) {
-  patterns->insert<UnfuseBatchNormInferencePattern>(context);
+                                     RewritePatternSet* patterns) {
+  patterns->add<UnfuseBatchNormInferencePattern>(context);
 }
 
 }  // namespace mhlo

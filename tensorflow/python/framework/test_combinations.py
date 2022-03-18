@@ -43,10 +43,6 @@ These behaviors can be customized by providing instances of `TestCombination` to
 `generate()`.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from collections import OrderedDict
 import contextlib
 import re
@@ -81,7 +77,7 @@ class TestCombination(object):
     If the environment doesn't satisfy the dependencies of the test
     combination, then it can be skipped.
 
-    Arguments:
+    Args:
       kwargs:  Arguments that are passed to the test combination.
 
     Returns:
@@ -103,7 +99,7 @@ class TestCombination(object):
     The test combination will run under all context managers that all
     `TestCombination` instances return.
 
-    Arguments:
+    Args:
       kwargs:  Arguments and their values that are passed to the test
         combination.
 
@@ -141,7 +137,7 @@ class ParameterModifier(object):
   def __init__(self, parameter_name=None):
     """Construct a parameter modifier that may be specific to a parameter.
 
-    Arguments:
+    Args:
       parameter_name:  A `ParameterModifier` instance may operate on a class of
         parameters or on a parameter with a particular name.  Only
         `ParameterModifier` instances that are of a unique type or were
@@ -157,7 +153,7 @@ class ParameterModifier(object):
     This makes it possible to adjust user-provided arguments before passing
     them to the test method.
 
-    Arguments:
+    Args:
       kwargs:  The combined arguments for the test.
       requested_parameters: The set of parameters that are defined in the
         signature of the test method.

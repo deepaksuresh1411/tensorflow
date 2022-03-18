@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/task/storage_type_util.h"
 
+#include <string>
+
+#include "absl/strings/str_cat.h"
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/shape.h"
 #include "tensorflow/lite/delegates/gpu/common/task/tensor_desc.h"
@@ -23,97 +26,55 @@ limitations under the License.
 namespace tflite {
 namespace gpu {
 
-bool CanCreateTensorWithShape(const GpuInfo& gpu_info, const BHWDC& shape,
-                              const TensorDescriptor& descriptor) {
-  const int slices = DivideRoundUp(shape.c, 4);
-  switch (descriptor.storage_type) {
-    case TensorStorageType::BUFFER: {
-      const int flt4_size =
-          4 * (descriptor.data_type == DataType::FLOAT32 ? 4 : 2);
-      const int buffer_size =
-          shape.b * shape.w * shape.h * shape.d * slices * flt4_size;
-      return buffer_size <= gpu_info.GetMaxBufferSize();
-    }
-    case TensorStorageType::IMAGE_BUFFER:
-      return shape.b * shape.w * shape.h * shape.d * slices <=
-             gpu_info.GetMaxImageBufferWidth();
-    case TensorStorageType::TEXTURE_3D:
-      if (gpu_info.opencl_info.cl_version < OpenClVersion::kCl1_2 &&
-          slices == 1) {
-        // clCreateImage3D (that used in CL 1.0/1.1) can not create image with
-        // depth = 1 by specification;
-        return false;
-      }
-      return shape.w * shape.b <= gpu_info.GetMaxImage3DWidth() &&
-             shape.h <= gpu_info.GetMaxImage3DHeight() &&
-             slices * shape.d <= gpu_info.GetMaxImage3DDepth();
-    case TensorStorageType::TEXTURE_ARRAY:
-      // Bug on some Adreno. b/131099086
-      if (slices == 1 && gpu_info.IsAdreno() &&
-          !gpu_info.adreno_info.support_one_layer_texture_array) {
-        return false;
-      }
-      return shape.w * shape.b <= gpu_info.GetMaxImage2DWidth() &&
-             shape.h <= gpu_info.GetMaxImage2DHeight() &&
-             slices * shape.d <= gpu_info.GetMaxImage2DArrayLayers();
-    case TensorStorageType::TEXTURE_2D:
-      return shape.w * shape.b * shape.d <= gpu_info.GetMaxImage2DWidth() &&
-             shape.h * slices <= gpu_info.GetMaxImage2DHeight();
-    case TensorStorageType::SINGLE_TEXTURE_2D:
-      return shape.c <= 4 &&
-             gpu_info.SupportsFloatImage2D(descriptor.data_type, shape.c) &&
-             shape.w * shape.b * shape.d <= gpu_info.GetMaxImage2DWidth() &&
-             shape.h <= gpu_info.GetMaxImage2DHeight();
-    default:
-      return false;
+absl::Status SelectBestStorageType(const GpuInfo& gpu_info, const BHWC& shape,
+                                   TensorStorageType desired,
+                                   DataType data_type, Layout layout,
+                                   TensorStorageType* result) {
+  if (TensorDescriptor{data_type, desired, layout}
+          .CanCreateTensorWithShape(gpu_info, shape)
+          .ok()) {
+    *result = desired;
+    return absl::OkStatus();
   }
-}
-
-bool CanCreateTensorWithShape(const GpuInfo& gpu_info, const BHWC& shape,
-                              const TensorDescriptor& descriptor) {
-  const BHWDC shape5D(shape.b, shape.h, shape.w, 1, shape.c);
-  return CanCreateTensorWithShape(gpu_info, shape5D, descriptor);
-}
-
-TensorStorageType SelectBestStorageType(const GpuInfo& gpu_info,
-                                        const BHWC& shape,
-                                        const TensorStorageType& desired,
-                                        const DataType& data_type,
-                                        const Layout& layout) {
-  if (CanCreateTensorWithShape(gpu_info, shape,
-                               TensorDescriptor{data_type, desired, layout})) {
-    return desired;
+  if (gpu_info.IsApiMetal()) {
+    *result = TensorStorageType::BUFFER;
+    return TensorDescriptor{data_type, TensorStorageType::BUFFER, layout}
+        .CanCreateTensorWithShape(gpu_info, shape);
   }
-  auto GetBestTypeAfterTextureArray = [&]() {
+  auto GetBestTypeAfterTexture2D = [&]() {
     if (gpu_info.SupportsImageBuffer() &&
-        CanCreateTensorWithShape(
-            gpu_info, shape,
-            TensorDescriptor{data_type, TensorStorageType::IMAGE_BUFFER,
-                             layout})) {
-      return TensorStorageType::IMAGE_BUFFER;
+        TensorDescriptor{data_type, TensorStorageType::IMAGE_BUFFER, layout}
+            .CanCreateTensorWithShape(gpu_info, shape)
+            .ok()) {
+      *result = TensorStorageType::IMAGE_BUFFER;
+      return absl::OkStatus();
     } else {
-      return TensorStorageType::BUFFER;
+      *result = TensorStorageType::BUFFER;
+      return TensorDescriptor{data_type, TensorStorageType::BUFFER, layout}
+          .CanCreateTensorWithShape(gpu_info, shape);
     }
   };
-  auto GetBestTypeAfterTexture2D = [&]() {
-    if (gpu_info.SupportsTextureArray() &&
-        CanCreateTensorWithShape(
-            gpu_info, shape,
-            TensorDescriptor{data_type, TensorStorageType::TEXTURE_ARRAY,
-                             layout})) {
-      return TensorStorageType::TEXTURE_ARRAY;
+  auto GetBestTypeAfterTextureArray = [&]() {
+    if (gpu_info.SupportsImageBuffer() &&
+        TensorDescriptor{data_type, TensorStorageType::IMAGE_BUFFER, layout}
+            .CanCreateTensorWithShape(gpu_info, shape)
+            .ok()) {
+      *result = TensorStorageType::IMAGE_BUFFER;
+      return absl::OkStatus();
     } else {
-      return GetBestTypeAfterTextureArray();
+      *result = TensorStorageType::BUFFER;
+      return TensorDescriptor{data_type, TensorStorageType::BUFFER, layout}
+          .CanCreateTensorWithShape(gpu_info, shape);
     }
   };
   auto GetBestTypeAfterTexture3D = [&]() {
-    if (CanCreateTensorWithShape(
-            gpu_info, shape,
-            TensorDescriptor{data_type, TensorStorageType::TEXTURE_2D,
-                             layout})) {
-      return TensorStorageType::TEXTURE_2D;
+    if (TensorDescriptor{data_type, TensorStorageType::TEXTURE_2D, layout}
+            .CanCreateTensorWithShape(gpu_info, shape)
+            .ok()) {
+      *result = TensorStorageType::TEXTURE_2D;
+      return absl::OkStatus();
     } else {
-      return GetBestTypeAfterTexture2D();
+      return GetBestTypeAfterTextureArray();
     }
   };
   switch (desired) {
@@ -124,11 +85,26 @@ TensorStorageType SelectBestStorageType(const GpuInfo& gpu_info,
       return GetBestTypeAfterTextureArray();
     case TensorStorageType::TEXTURE_3D:
       return GetBestTypeAfterTexture3D();
-    case TensorStorageType::IMAGE_BUFFER:
-    case TensorStorageType::BUFFER:
-      return TensorStorageType::BUFFER;
+    case TensorStorageType::IMAGE_BUFFER: {
+      if (TensorDescriptor{data_type, TensorStorageType::IMAGE_BUFFER, layout}
+              .CanCreateTensorWithShape(gpu_info, shape)
+              .ok()) {
+        *result = TensorStorageType::IMAGE_BUFFER;
+        return absl::OkStatus();
+      } else {
+        *result = TensorStorageType::BUFFER;
+        return TensorDescriptor{data_type, TensorStorageType::BUFFER, layout}
+            .CanCreateTensorWithShape(gpu_info, shape);
+      }
+    }
+    case TensorStorageType::BUFFER: {
+      *result = TensorStorageType::BUFFER;
+      return TensorDescriptor{data_type, TensorStorageType::BUFFER, layout}
+          .CanCreateTensorWithShape(gpu_info, shape);
+    }
     default:
-      return TensorStorageType::BUFFER;
+      return absl::UnimplementedError(absl::StrCat(
+          "No support of this storage type - ", ToString(desired)));
   }
 }
 

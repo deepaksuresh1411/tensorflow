@@ -24,10 +24,11 @@ limitations under the License.
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
-#include "mlir/Parser.h"  // from @llvm-project
+#include "mlir/Parser/Parser.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Pass/PassRegistry.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/passes_detail.h"
 
 #define DEBUG_TYPE "tf-materialize-passthrough-op"
 
@@ -35,18 +36,19 @@ namespace mlir {
 namespace {
 
 class MaterializePassthroughOpPass
-    : public PassWrapper<MaterializePassthroughOpPass, FunctionPass> {
+    : public TF::MaterializePassthroughOpBase<MaterializePassthroughOpPass> {
  public:
-  void runOnFunction() override;
+  void runOnOperation() override;
 };
 
-void MaterializePassthroughOpPass::runOnFunction() {
-  getFunction().walk([](Operation *op) {
+void MaterializePassthroughOpPass::runOnOperation() {
+  getOperation().walk([](Operation *op) {
     auto passthrough_op = dyn_cast<TF::MlirPassthroughOp>(op);
     if (!passthrough_op) return;
     std::string module_string(passthrough_op.mlir_module());
     // Parse the module.
-    auto nested_module = parseSourceString(module_string, op->getContext());
+    auto nested_module =
+        parseSourceString<ModuleOp>(module_string, op->getContext());
     if (!nested_module) {
       op->emitError() << "could not parse attached MLIR module";
       return;
@@ -100,10 +102,5 @@ std::unique_ptr<OperationPass<FuncOp>> CreateMaterializePassthroughOpPass() {
   return std::make_unique<MaterializePassthroughOpPass>();
 }
 }  // namespace TF
-
-static PassRegistration<MaterializePassthroughOpPass> pass(
-    "tf-materialize-passthrough-op",
-    "Materialize the MlirPassthroughOp by replacing it with the MLIR module "
-    "attached as an attribute");
 
 }  // namespace mlir

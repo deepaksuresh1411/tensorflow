@@ -13,11 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Generate Java reference docs for TensorFlow.org."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+"""Generate C++ reference docs for TensorFlow.org."""
+import os
 import pathlib
 import subprocess
 
@@ -38,6 +35,7 @@ TENSORFLOW_ROOT = DOCS_TOOLS_DIR.parents[2]
 
 def build_headers(output_dir):
   """Builds the headers files for TF."""
+  os.makedirs(output_dir, exist_ok=True)
 
   # `$ yes | configure`
   yes = subprocess.Popen(['yes', ''], stdout=subprocess.PIPE)

@@ -50,7 +50,7 @@ auto OpGradientInfoInit(const T &a) {
 
 absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
     const tensorflow::string &op_name) {
-  static std::array<OpIndexInfo, 358> a = {{
+  static std::array<OpIndexInfo, 363> a = {{
       {"Acosh"},
       {"AllToAll", 1, {0}},
       {"ApproximateEqual"},
@@ -74,7 +74,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
       {"BitwiseOr"},
       {"BitwiseXor"},
       {"BroadcastGradientArgs"},
-      {"CSRSparseMatrixToDense"},
+      {"CSRSparseMatrixToSparseTensor"},
       {"CTCBeamSearchDecoder"},
       {"CTCGreedyDecoder"},
       {"CTCLoss"},
@@ -84,6 +84,8 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
       {"CheckNumericsV2"},
       {"Cholesky"},
       {"CollectivePermute", 1, {0}},
+      {"CompositeTensorVariantFromComponents"},
+      {"CompositeTensorVariantToComponents"},
       {"Conj"},
       {"ConjugateTranspose", 1, {0}},
       {"Const"},
@@ -235,6 +237,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
       {"QueueSize"},
       {"RaggedRange"},
       {"RandomCrop"},
+      {"RandomIndexShuffle"},
       {"RandomStandardNormal"},
       {"RandomUniform"},
       {"Range"},
@@ -319,6 +322,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
       {"SparseSparseMaximum"},
       {"SparseSparseMinimum"},
       {"SparseTensorDenseAdd", 3, {1, 2, 3}},
+      {"SparseTensorToCSRSparseMatrix"},
       {"SparseToSparseSetOperation"},
       {"Split", 1, {1}},
       {"Sqrt"},
@@ -408,6 +412,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
       {"XlaSharding"},
       {"XlaSpmdShardToFullShape"},
       {"ZerosLike"},
+      {"_EagerConst"},
       {"VarHandleOp"},
   }};
   static const auto &m = *OpGradientInfoInit(a);
@@ -421,7 +426,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
 
 absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
     const tensorflow::string &op_name) {
-  static std::array<OpIndexInfo, 475> a = {{
+  static std::array<OpIndexInfo, 481> a = {{
       {"Abs"},
       {"AccumulateNV2"},
       {"Acos"},
@@ -450,6 +455,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"AvgPoolGrad"},
       {"BatchMatMul"},
       {"BatchMatMulV2"},
+      {"BatchMatMulV3"},
       {"BatchNormWithGlobalNormalization"},
       {"BatchToSpace"},
       {"BatchToSpaceND"},
@@ -467,6 +473,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"BroadcastGradientArgs"},
       {"BroadcastTo"},
       {"CSRSparseMatrixToDense"},
+      {"CSRSparseMatrixToSparseTensor", 1, {1}},
       {"CTCGreedyDecoder"},
       {"CTCLoss", 1, {0}},
       {"CTCLossV2", 1, {0}},
@@ -476,6 +483,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"CheckNumericsV2"},
       {"CollectivePermute"},
       {"Complex"},
+      {"CompositeTensorVariantFromComponents"},
       {"Concat"},
       {"ConcatV2"},
       {"Conj"},
@@ -684,6 +692,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"RaggedTensorToTensor"},
       {"RaggedTensorToVariant"},
       {"RandomCrop"},
+      {"RandomIndexShuffle"},
       {"RandomStandardNormal"},
       {"RandomUniform"},
       {"Range"},
@@ -786,6 +795,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"SparseSparseMinimum"},
       {"SparseTensorDenseAdd"},
       {"SparseTensorDenseMatMul"},
+      {"SparseTensorToCSRSparseMatrix"},
       {"SparseToDense"},
       {"SparseToSparseSetOperation"},
       {"Spence"},
@@ -896,6 +906,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"Xlogy"},
       {"ZerosLike"},
       {"Zeta"},
+      {"_EagerConst"},
       {"VarHandleOp"},
   }};
   static const auto &m = *OpGradientInfoInit(a);

@@ -37,18 +37,16 @@ class CpuElementalIrEmitter : public ElementalIrEmitter {
 
  protected:
   StatusOr<llvm::Value*> EmitAtan2(PrimitiveType prim_type, llvm::Value* lhs,
-                                   llvm::Value* rhs) override;
+                                   llvm::Value* rhs,
+                                   absl::string_view name) override;
   StatusOr<llvm::Value*> EmitTanh(PrimitiveType prim_type,
                                   llvm::Value* value) override;
-  StatusOr<llvm::Value*> EmitConvolution(
-      const HloInstruction* hlo,
-      const HloToElementGeneratorMap& operand_to_generator,
-      const llvm_ir::IrArray::Index& index) override;
 
   StatusOr<std::vector<llvm::Value*>> EmitThreadLocalCall(
       const HloComputation& callee, absl::Span<llvm::Value* const> parameters,
-      absl::string_view name) override {
-    return ir_emitter_->EmitThreadLocalCall(callee, parameters, name);
+      absl::string_view name, bool is_reducer) override {
+    return ir_emitter_->EmitThreadLocalCall(callee, parameters, name,
+                                            is_reducer);
   }
 
   bool fast_min_max() override {

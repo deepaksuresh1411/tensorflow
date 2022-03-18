@@ -20,6 +20,8 @@ limitations under the License.
 #include <vector>
 
 #include "absl/memory/memory.h"
+#include "absl/time/time.h"
+#include "absl/types/optional.h"
 #include "tensorflow/core/common_runtime/costmodel_manager.h"
 #include "tensorflow/core/common_runtime/entry.h"
 #include "tensorflow/core/common_runtime/executor_factory.h"
@@ -62,6 +64,7 @@ limitations under the License.
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/profile_utils/cpu_utils.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/tracing.h"
 #include "tensorflow/core/platform/types.h"
@@ -70,16 +73,12 @@ limitations under the License.
 #include "tensorflow/core/profiler/lib/scoped_annotation.h"
 #include "tensorflow/core/profiler/lib/traceme_encode.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
+#include "tensorflow/core/util/determinism.h"
+#include "tensorflow/core/util/managed_stack_trace.h"
 #include "tensorflow/core/util/tensor_slice_reader_cache.h"
 
 namespace tensorflow {
 
-// Temporary flag for controlling whether to always track kernel execution
-// costs.
-static bool always_track_kernel_execution_cost = false;
-void EnableAlwaysTrackKernelExecutionCost() {
-  always_track_kernel_execution_cost = true;
-}
 namespace {
 
 // 1-D, 0 element tensor.
@@ -87,9 +86,9 @@ static const Tensor* const kEmptyTensor = new Tensor;
 
 // Helper routines for collecting step stats.
 namespace nodestats {
-inline int64 NowInNsec() { return EnvTime::NowNanos(); }
+inline int64_t NowInNsec() { return EnvTime::NowNanos(); }
 
-void SetScheduled(NodeExecStatsInterface* stats, int64 micros) {
+void SetScheduled(NodeExecStatsInterface* stats, int64_t micros) {
   if (!stats) return;
   stats->SetScheduled(micros * EnvTime::kMicrosToNanos);
 }
@@ -162,10 +161,10 @@ class ExecutorImpl : public Executor {
     KernelStats() = default;
 
     void Initialize(const GraphView& gview) {
-      is_expensive_ = absl::make_unique<std::atomic<bool>[]>(gview.num_nodes());
+      is_expensive_.resize(gview.num_nodes());
       cost_estimates_ =
           absl::make_unique<std::atomic_uint_fast64_t[]>(gview.num_nodes());
-      for (int32 i = 0; i < gview.num_nodes(); ++i) {
+      for (int32_t i = 0; i < gview.num_nodes(); ++i) {
         if (gview.node(i)) {
           is_expensive_[i] =
               gview.node(i)->kernel && gview.node(i)->kernel->IsExpensive();
@@ -183,23 +182,26 @@ class ExecutorImpl : public Executor {
               kOpIsExpensiveThresholdCycles);
     }
 
+    // Returns the value of kernel->IsExpensive().
+    bool HasExpensiveMarker(const NodeItem& node) const {
+      return is_expensive_[node.node_id];
+    }
+
     // Updates the dynamic cost estimate, which is used to determine whether the
     // given node is expensive. The new cost estimate is a weighted average of
-    // the old cost estimate and the latest cost.
+    // the old cost estimate and the latest cost. We only update cost estimates
+    // for kernels for which IsExpensive() return true.
     void UpdateCostEstimate(const NodeItem& node, uint64 elapsed_cycles) {
       // N.B. Updates to `cost_estimate` are atomic but unlocked.  Simultaneous
       // updates may result in one or more updates being ignored.  This does not
       // affect correctness but may slow down the update frequency.
       std::atomic_uint_fast64_t& cost_estimate = cost_estimates_[node.node_id];
-      uint64 new_estimate = (kCostDecay - 1) *
-                                cost_estimate.load(std::memory_order_relaxed) /
-                                kCostDecay +
-                            (elapsed_cycles / kCostDecay);
-      cost_estimate.store(new_estimate, std::memory_order_relaxed);
+      auto prev_estimate = cost_estimate.load(std::memory_order_relaxed);
 
-      bool new_is_expensive = (new_estimate >= kOpIsExpensiveThresholdCycles);
-      is_expensive_[node.node_id].store(new_is_expensive,
-                                        std::memory_order_relaxed);
+      uint64 new_estimate =
+          ((kCostDecay - 1) * prev_estimate + elapsed_cycles) / kCostDecay;
+
+      cost_estimate.store(new_estimate, std::memory_order_relaxed);
     }
 
    private:
@@ -207,10 +209,11 @@ class ExecutorImpl : public Executor {
     // determine whether an operation should be place in a threadpool.
     // Operations start out "expensive".
     static constexpr uint64 kInitialCostEstimateCycles = 100 * 1000 * 1000;
-    static constexpr uint64 kOpIsExpensiveThresholdCycles = 5000;
+    static constexpr uint64 kOpIsExpensiveThresholdCycles = 8000;
     static constexpr uint64 kCostDecay = 10;
 
-    std::unique_ptr<std::atomic<bool>[]> is_expensive_;
+    std::vector<bool> is_expensive_;
+    // std::unique_ptr<std::atomic<bool>[]> is_expensive_;
     std::unique_ptr<std::atomic_uint_fast64_t[]> cost_estimates_;
   };
 
@@ -239,7 +242,7 @@ class ExecutorImpl : public Executor {
 //   * `TaggedNode front() const`
 //   * `void pop_front()`
 //   * `bool empty() const`
-// * A type `TaggedNodeSeq`, representing a list of nodes to be schedules, with
+// * A type `TaggedNodeSeq`, representing a list of nodes to be scheduled, with
 //   public members (having the same meanings as in an
 //   `std::vector<TaggedNode>`):
 //   * `size_t size() const`
@@ -289,7 +292,7 @@ class ExecutorState {
   struct AsyncState;
 
   // Process a ready node in current thread.
-  void Process(TaggedNode node, int64 scheduled_nsec);
+  void Process(TaggedNode node, int64_t scheduled_nsec);
 
   Status ProcessSync(const NodeItem& item, OpKernelContext::Params* params,
                      EntryVector* outputs, NodeExecStatsInterface* stats);
@@ -345,7 +348,11 @@ class ExecutorState {
   // true if LogMemory::IsEnabled(). Used to check memory enabled cheaply.
   const bool log_memory_;
 
-  int64 step_id_;
+  int64_t step_id_;
+  int64_t start_time_usecs_ = 0;
+  // The deadline for the session to complete by. Empty if unspecified.
+  absl::optional<absl::Time> deadline_;
+
   // Not owned.
   RendezvousInterface* rendezvous_;
   CollectiveExecutor* collective_executor_ = nullptr;
@@ -366,6 +373,8 @@ class ExecutorState {
   const ImmutableExecutorState& immutable_state_;
   ExecutorImpl::KernelStats* const kernel_stats_;
   CancellationManager* cancellation_manager_;
+  CoordinationServiceAgent* coordination_service_agent_;
+  absl::optional<ManagedStackTrace> stack_trace_ = absl::nullopt;
   // If not null, use this device to schedule intra-op operation
   std::unique_ptr<DeviceBase> user_device_;
   Executor::Args::Runner runner_;
@@ -381,7 +390,7 @@ class ExecutorState {
 
   // Available via OpKernelContext to every OpKernel invocation.
   mutex num_deferred_ops_mu_;
-  int64 num_deferred_ops_ TF_GUARDED_BY(num_deferred_ops_mu_) = 0;
+  int64_t num_deferred_ops_ TF_GUARDED_BY(num_deferred_ops_mu_) = 0;
   bool finish_when_deferred_ops_done_ TF_GUARDED_BY(num_deferred_ops_mu_) =
       false;
 
@@ -396,6 +405,8 @@ ExecutorState<PropagatorStateType>::ExecutorState(
     : vlog_(VLOG_IS_ON(1)),
       log_memory_(LogMemory::IsEnabled()),
       step_id_(args.step_id),
+      start_time_usecs_(args.start_time_usecs),
+      deadline_(args.deadline),
       rendezvous_(args.rendezvous),
       collective_executor_(args.collective_executor),
       session_state_(args.session_state),
@@ -412,6 +423,8 @@ ExecutorState<PropagatorStateType>::ExecutorState(
       immutable_state_(immutable_state),
       kernel_stats_(kernel_stats),
       cancellation_manager_(args.cancellation_manager),
+      coordination_service_agent_(args.coordination_service_agent),
+      stack_trace_(args.stack_trace),
       runner_(args.runner),
       sync_on_finish_(args.sync_on_finish),
       run_all_kernels_inline_(args.run_all_kernels_inline),
@@ -569,24 +582,19 @@ Status ExecutorState<PropagatorStateType>::ProcessSync(
         },
         profiler::GetTFTraceMeLevel(is_expensive));
     device->Compute(op_kernel, &ctx);
-  } else {
-    // In the common case, avoid creating any tracing objects.
-    if (is_expensive) {
-      KernelTimer timer;
-      device->Compute(op_kernel, &ctx);
+  } else if (kernel_stats_->HasExpensiveMarker(item)) {
+    KernelTimer timer;
+    device->Compute(op_kernel, &ctx);
+    // For expensive kernels, always update the cost estimate. For inexpensive
+    // kernels, update the cost estimate with ~1/16 probability. This assumes
+    // that the last 4 bits of the CPU cycle count is uniformly distributed.
+    constexpr int kKernelExecutionTrackingInvocationSkipCount = 16;
+    if (is_expensive ||
+        timer.start_cycles % kKernelExecutionTrackingInvocationSkipCount == 0) {
       kernel_stats_->UpdateCostEstimate(item, timer.ElapsedCycles());
-    } else if (always_track_kernel_execution_cost) {
-      KernelTimer timer;
-      device->Compute(op_kernel, &ctx);
-      // If always_track_kernel_execution_cost is set, update the cost estimate
-      // for inexpensive kernels with ~1/8 probability. This assumes that the
-      // last 3 bits of the CPU cycle count is uniformly distributed.
-      constexpr int kKernelExecutionTrackingInvocationSkipCount = 8;
-      if (timer.start_cycles % kKernelExecutionTrackingInvocationSkipCount == 0)
-        kernel_stats_->UpdateCostEstimate(item, timer.ElapsedCycles());
-    } else {
-      device->Compute(op_kernel, &ctx);
     }
+  } else {
+    device->Compute(op_kernel, &ctx);
   }
   nodestats::SetOpEnd(stats);
   if (outputs->size() < item.num_outputs) outputs->resize(item.num_outputs);
@@ -669,7 +677,7 @@ void ExecutorState<PropagatorStateType>::ProcessConstTensor(
 
 template <class PropagatorStateType>
 void ExecutorState<PropagatorStateType>::Process(TaggedNode tagged_node,
-                                                 int64 scheduled_nsec) {
+                                                 int64_t scheduled_nsec) {
   profiler::TraceMeConsumer activity(
       // From TraceMeProducer in DirectSession::RunInternal,
       // GraphMgr::ExecuteAsync, or FunctionLibraryRuntime::Run.
@@ -701,6 +709,8 @@ void ExecutorState<PropagatorStateType>::Process(TaggedNode tagged_node,
   } else {
     params.device = device;
   }
+  params.start_time_usecs = start_time_usecs_;
+  params.deadline = deadline_;
   params.log_memory = log_memory_;
   params.rendezvous = rendezvous_;
   params.collective_executor = collective_executor_;
@@ -709,6 +719,8 @@ void ExecutorState<PropagatorStateType>::Process(TaggedNode tagged_node,
   params.session_metadata = session_metadata_;
   params.tensor_store = tensor_store_;
   params.cancellation_manager = cancellation_manager_;
+  params.coordination_service_agent = coordination_service_agent_;
+  params.stack_trace = stack_trace_;
   params.call_frame = call_frame_;
   params.function_library = immutable_state_.params().function_library;
   params.resource_manager = device->resource_manager();
@@ -987,16 +999,21 @@ Status ExecutorState<PropagatorStateType>::ProcessOutputs(
       if (stats_collector_) {
         string err = stats_collector_->ReportAllocsOnResourceExhausted(
             s.error_message());
-        s = Status(s.code(), strings::StrCat(s.error_message(), err));
+        s = errors::CreateWithUpdatedMessage(
+            s, strings::StrCat(s.error_message(), err));
       } else {
-        s = Status(
-            s.code(),
+        s = errors::CreateWithUpdatedMessage(
+            s,
             strings::StrCat(
                 s.error_message(),
                 "\nHint: If you want to see a list of allocated tensors when "
                 "OOM happens, add report_tensor_allocations_upon_oom "
-                "to RunOptions for current allocation info.\n"));
+                "to RunOptions for current allocation info. This isn't "
+                "available when running in Eager mode.\n"));
       }
+    } else if (s.code() == error::UNAVAILABLE &&
+               !item.is_distributed_communication) {
+      s = errors::ReplaceErrorFromNonCommunicationOps(s, item.kernel->name());
     }
     return s;
   }
@@ -1094,6 +1111,7 @@ bool ExecutorState<PropagatorStateType>::NodeDone(
     }
   } else {
     bool abort_run = false;
+    Status maybe_derived_s(s);
 
     // Some error happened. This thread of computation is done.
     {
@@ -1110,6 +1128,7 @@ bool ExecutorState<PropagatorStateType>::NodeDone(
         if (cancellation_manager_ && cancellation_manager_->IsCancelled() &&
             (errors::IsCancelled(s) || errors::IsAborted(s))) {
           status_ = StatusGroup::MakeDerived(s);
+          maybe_derived_s = status_;
         } else {
           status_ = s;
         }
@@ -1131,7 +1150,7 @@ bool ExecutorState<PropagatorStateType>::NodeDone(
         rendezvous_->StartAbort(s);
       }
       if (cancellation_manager_) {
-        cancellation_manager_->StartCancel();
+        cancellation_manager_->StartCancelWithStatus(maybe_derived_s);
       } else if (collective_executor_) {
         // If there's cancellation_manager_, collective ops aborts
         // collective_executor_ upon cancellation; otherwise we need to abort
@@ -1149,7 +1168,7 @@ void ExecutorState<PropagatorStateType>::ScheduleReady(
     TaggedNodeSeq* ready, TaggedNodeReadyQueue* inline_ready) {
   DCHECK(!ready->empty());
 
-  int64 scheduled_nsec = 0;
+  int64_t scheduled_nsec = 0;
   if (stats_collector_) {
     scheduled_nsec = nodestats::NowInNsec();
   }
@@ -1235,7 +1254,7 @@ void ExecutorState<PropagatorStateType>::Finish() {
   auto done_cb = std::move(done_cb_);
   auto runner = std::move(runner_);
   mu_.unlock();
-  int64 step_id = step_id_;
+  int64_t step_id = step_id_;
   CHECK(done_cb != nullptr);
   Device* device = immutable_state_.params().device;
 
@@ -1281,7 +1300,7 @@ void ExecutorState<PropagatorStateType>::Finish() {
         rendezvous_->StartAbort(status);
       }
       if (cancellation_manager_) {
-        cancellation_manager_->StartCancel();
+        cancellation_manager_->StartCancelWithStatus(status);
       } else if (collective_executor_) {
         // If there's cancellation_manager_, collective ops aborts
         // collective_executor_ upon cancellation; otherwise we need to abort
@@ -1344,7 +1363,11 @@ void ExecutorState<PropagatorStateType>::Finish() {
 }
 
 void ExecutorImpl::RunAsync(const Args& args, DoneCallback done) {
-  if (immutable_state_.requires_control_flow_support()) {
+  if (OpOrderDeterminismRequired()) {
+    (new ExecutorState<OrderedPropagatorState>(args, immutable_state_,
+                                               &kernel_stats_))
+        ->RunAsync(std::move(done));
+  } else if (immutable_state_.requires_control_flow_support()) {
     (new ExecutorState<PropagatorState>(args, immutable_state_, &kernel_stats_))
         ->RunAsync(std::move(done));
   } else {

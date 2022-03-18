@@ -15,19 +15,15 @@
 """Tests for tf numpy random number methods."""
 # pylint: disable=g-direct-tensorflow-import
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as onp
-from six.moves import range
 
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import numpy_ops as np
 # Needed for ndarray.reshape.
 from tensorflow.python.ops.numpy_ops import np_array_ops  # pylint: disable=unused-import
 from tensorflow.python.ops.numpy_ops import np_dtypes
+from tensorflow.python.ops.numpy_ops import np_math_ops
 from tensorflow.python.ops.numpy_ops import np_random
 from tensorflow.python.platform import test
 
@@ -192,7 +188,7 @@ class RandNDistriutionTest(test.TestCase):
         self.assertEqual(output.shape, tuple(args))
         default_dtype = (
             np.float64 if np_dtypes.is_allow_float64() else np.float32)
-        self.assertEqual(output.dtype.type, default_dtype)
+        self.assertEqual(output.dtype.as_numpy_dtype, default_dtype)
 
       if np.prod(args):  # Don't bother with empty arrays.
         outputs = [output.tolist() for output in outputs]
@@ -230,4 +226,5 @@ class RandNDistriutionTest(test.TestCase):
 
 if __name__ == '__main__':
   ops.enable_eager_execution()
+  np_math_ops.enable_numpy_methods_on_tensor()
   test.main()

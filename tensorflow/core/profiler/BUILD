@@ -1,3 +1,4 @@
+# copybara:uncomment(oss-unused) load("//net/grpc/go/build_defs:go_grpc_library.bzl", "go_grpc_library")
 load("//tensorflow:tensorflow.bzl", "filegroup")
 load("//tensorflow:tensorflow.bzl", "tf_cc_binary")
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
@@ -5,7 +6,7 @@ load("//tensorflow/core/platform:build_config.bzl", "tf_additional_all_protos", 
 
 package(
     default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 package_group(
@@ -134,9 +135,34 @@ cc_library(
 )
 
 filegroup(
-    name = "mobile_srcs",
+    name = "mobile_srcs_no_runtime",
     srcs = [
-        "//tensorflow/core/profiler/lib:mobile_srcs",
+        "//tensorflow/core/profiler/lib:mobile_srcs_no_runtime",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )
+
+filegroup(
+    name = "mobile_srcs_only_runtime",
+    srcs = [
+        "//tensorflow/core/profiler/lib:mobile_srcs_only_runtime",
+    ],
+    visibility = ["//tensorflow/core:__pkg__"],
+)
+
+# copybara:uncomment_begin(google-only)
+# py_proto_library(
+#     name = "profiler_analysis_proto_py_pb2",
+#     has_services = 1,
+#     api_version = 2,
+#     visibility = ["//visibility:public"],
+#     deps = [":profiler_analysis_proto"],
+# )
+#
+# py_proto_library(
+#     name = "protos_all_py_pb2",
+#     api_version = 2,
+#     visibility = [":friends"],
+#     deps = [":protos_all"],
+# )
+# copybara:uncomment_end

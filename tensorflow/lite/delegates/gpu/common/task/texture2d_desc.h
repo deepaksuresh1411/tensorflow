@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_GPU_COMMON_TASK_TEXTURE2D_DESC_H_
 #define TENSORFLOW_LITE_DELEGATES_GPU_COMMON_TASK_TEXTURE2D_DESC_H_
 
+#include <string>
+
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/task/gpu_object_desc.h"
@@ -28,8 +30,8 @@ struct Texture2DDescriptor : public GPUObjectDescriptor {
   DataType element_type;
   bool normalized = false;   // used with INT data types, if normalized, we read
                              // in kernel float data.
-  DataType normalized_type;  // can be FLOAT32 or FLOAT16, using with normalized
-                             // = true
+  DataType normalized_type = DataType::UNKNOWN;  // can be FLOAT32 or FLOAT16,
+                                                 // using with normalized = true
 
   // optional
   int2 size = int2(0, 0);
@@ -41,16 +43,19 @@ struct Texture2DDescriptor : public GPUObjectDescriptor {
   Texture2DDescriptor(Texture2DDescriptor&& desc) = default;
   Texture2DDescriptor& operator=(Texture2DDescriptor&& desc) = default;
 
-  absl::Status PerformSelector(const std::string& selector,
+  absl::Status PerformSelector(const GpuInfo& gpu_info,
+                               const std::string& selector,
                                const std::vector<std::string>& args,
                                const std::vector<std::string>& template_args,
                                std::string* result) const override;
 
-  GPUResources GetGPUResources() const override;
-  absl::Status PerformReadSelector(const std::vector<std::string>& args,
+  GPUResources GetGPUResources(const GpuInfo& gpu_info) const override;
+  absl::Status PerformReadSelector(const GpuInfo& gpu_info,
+                                   const std::vector<std::string>& args,
                                    std::string* result) const;
 
   void Release() override;
+  uint64_t GetSizeInBytes() const override { return data.size(); };
 };
 
 }  // namespace gpu

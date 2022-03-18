@@ -14,15 +14,13 @@
 # ==============================================================================
 """A tf.distribute.Strategy for running on a single device."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.distribute import device_util
 from tensorflow.python.distribute import distribute_lib
 from tensorflow.python.distribute import distribute_utils
 from tensorflow.python.distribute import input_lib
+from tensorflow.python.distribute import input_util
 from tensorflow.python.distribute import numpy_dataset
+from tensorflow.python.distribute.v1 import input_lib as input_lib_v1
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
@@ -261,7 +259,7 @@ class OneDeviceExtended(distribute_lib.StrategyExtendedV1):
     self._input_device = device_util.get_host_for_device(self._device)
 
   def _input_workers_with_options(self, options=None):
-    if not options or options.experimental_prefetch_to_device:
+    if not options or options.experimental_fetch_to_device:
       return input_lib.InputWorkers([(self._input_device, (self._device,))])
     else:
       return input_lib.InputWorkers([(self._input_device,
@@ -290,16 +288,16 @@ class OneDeviceExtended(distribute_lib.StrategyExtendedV1):
     """Make iterator from dataset without splitting the batch."""
     # Note that split_batch_by argument is not passed because it is always 1 in
     # this strategy, and adding it adds unnecessary overhead to the dataset.
-    return input_lib.DatasetIterator(dataset, self._input_workers,
-                                     self._container_strategy())
+    return input_lib_v1.DatasetIterator(dataset, self._input_workers,
+                                        self._container_strategy())
 
   def _make_input_fn_iterator(
       self,
       input_fn,
       replication_mode=distribute_lib.InputReplicationMode.PER_WORKER):
-    return input_lib.InputFunctionIterator(input_fn, self._input_workers,
-                                           [distribute_lib.InputContext()],
-                                           self._container_strategy())
+    return input_lib_v1.InputFunctionIterator(input_fn, self._input_workers,
+                                              [distribute_lib.InputContext()],
+                                              self._container_strategy())
 
   def _experimental_make_numpy_dataset(self, numpy_input, session):
     return numpy_dataset.one_host_numpy_dataset(
@@ -319,10 +317,11 @@ class OneDeviceExtended(distribute_lib.StrategyExtendedV1):
           "is only supported in  "
           "`experimental_distribute_datasets_from_function`."
       )
-    return input_lib.get_distributed_dataset(
+    return input_util.get_distributed_dataset(
         dataset,
         self._input_workers_with_options(options),
-        self._container_strategy())
+        self._container_strategy(),
+        options=options)
 
   def _distribute_datasets_from_function(self, dataset_fn, options):
     if (options and options.experimental_replication_mode ==
@@ -332,11 +331,12 @@ class OneDeviceExtended(distribute_lib.StrategyExtendedV1):
           "is only supported in "
           "`experimental_distribute_datasets_from_function` "
           "of tf.distribute.MirroredStrategy")
-    return input_lib.get_distributed_datasets_from_function(
+    return input_util.get_distributed_datasets_from_function(
         dataset_fn,
         self._input_workers_with_options(options),
         [distribute_lib.InputContext()],
-        self._container_strategy())
+        self._container_strategy(),
+        options=options)
 
   def _experimental_distribute_values_from_function(self, value_fn):
     # TODO(b/137795644): This should return a PerReplica value but other

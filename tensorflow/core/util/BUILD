@@ -15,6 +15,11 @@ load(
     "tf_cuda_library",
     "tf_cuda_only_cc_test",
     "tf_kernel_library",
+    "tf_mkl_kernel_library",
+)
+load(
+    "//third_party/mkl:build_defs.bzl",
+    "mkl_deps",
 )
 
 # buildifier: disable=same-origin-load
@@ -41,7 +46,11 @@ default_package_visibility = [
 
 package(
     default_visibility = default_package_visibility,
-    licenses = ["notice"],  # Apache 2.0
+    features = [
+        "-layering_check",
+        "-parse_headers",
+    ],
+    licenses = ["notice"],
 )
 
 # List of exported source files.
@@ -80,6 +89,8 @@ filegroup(
         "bcast.h",
         "command_line_flags.cc",
         "command_line_flags.h",
+        "determinism.cc",
+        "determinism.h",
         "device_name_utils.cc",
         "device_name_utils.h",
         "dump_graph.cc",
@@ -161,7 +172,6 @@ filegroup(
         "matmul_bcast.h",
         "mirror_pad_mode.h",
         "mkl_threadpool.h",
-        "mkl_types.h",
         "mkl_util.h",
         "overflow.h",
         "padding.h",
@@ -238,6 +248,7 @@ filegroup(
     name = "lib_internal_public_hdrs",
     srcs = [
         "env_var.h",
+        "use_cudnn.h",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )
@@ -274,6 +285,7 @@ filegroup(
     visibility = [
         "//tensorflow/core:__pkg__",
         "//tensorflow/python:__pkg__",
+        "//tensorflow/python/util:__pkg__",
     ],
 )
 
@@ -366,8 +378,14 @@ filegroup(
 # is written.
 tf_version_info_genrule(
     name = "version_info_gen",
-    out = "version_info.cc",
+    out = "version_info.h",
     compatible_with = get_compatible_with_portable(),
+)
+
+cc_library(
+    name = "version_info",
+    hdrs = ["version_info.h"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -383,6 +401,20 @@ cc_library(
     visibility = [
         "//tensorflow:internal",
     ],
+)
+
+tf_mkl_kernel_library(
+    name = "mkl_util",
+    srcs = ["mkl_util.cc"],
+    hdrs = ["mkl_util.h"],
+    deps = [
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core/framework:bounds_check",
+        "//tensorflow/core/kernels:ops_util",
+    ] + mkl_deps(),
 )
 
 cc_library(
@@ -460,23 +492,29 @@ cc_library(
     visibility = [
         "//tensorflow/core:__pkg__",
         "//tensorflow/python:__pkg__",
+        "//tensorflow/python/util:__pkg__",
     ],
     alwayslink = 1,
 )
 
 cc_library(
-    name = "abstract_stack_trace",
+    name = "managed_stack_trace",
     hdrs = ["managed_stack_trace.h"],
     visibility = [
         "//tensorflow/c/eager:__pkg__",
+        "//tensorflow/compiler/mlir/tensorflow:__pkg__",
         "//tensorflow/core:__pkg__",
         "//tensorflow/core/common_runtime/eager:__pkg__",
+        "//tensorflow/core/framework:__pkg__",
         "//tensorflow/core/platform:__pkg__",
         "//tensorflow/python:__pkg__",
         "//tensorflow/python/eager:__pkg__",
+        "//tensorflow/python/util:__pkg__",
     ],
     deps = [
-        "//tensorflow/core/platform:status",
+        "//tensorflow/core/platform:stack_frame",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:optional",
     ],
 )
 
@@ -517,15 +555,6 @@ cc_library(
 cc_library(
     name = "ptr_util",
     hdrs = ["ptr_util.h"],
-)
-
-cc_library(
-    name = "version_info",
-    srcs = ["version_info.cc"],
-    hdrs = ["//tensorflow/core/public:version.h"],
-    compatible_with = get_compatible_with_portable(),
-    copts = tf_copts(),
-    alwayslink = if_static(0, 1),
 )
 
 cc_library(
@@ -592,10 +621,58 @@ cc_library(
     ],
 )
 
+# Note: This rule should not be used as a dependency for kernels. Use the
+# "determinism_for_kernels" rule below instead.
+cc_library(
+    name = "determinism",
+    srcs = ["determinism.cc"],
+    hdrs = ["determinism.h"],
+    copts = tf_copts(),
+    visibility = ["//tensorflow:__subpackages__"],
+    deps = [
+        "//tensorflow/core/platform:mutex",
+        "//tensorflow/core/util:env_var",
+    ],
+    alwayslink = 1,
+)
+
+filegroup(
+    name = "determinism_hdr",
+    srcs = ["determinism.h"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = ["//tensorflow:__subpackages__"],
+)
+
+cc_library(
+    name = "determinism_hdr_lib",
+    hdrs = [":determinism_hdr"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = ["//visibility:private"],
+)
+
+# This alias should be used as a dependency for kernels which use determinism,
+# as well any other rules which are in the same shared library as the kernels.
+# This rule does not include the determinism.cc file for nonstatic builds. The
+# reason is that for nonstatic builds, the shared object which contains the
+# kernels (e.g. _pywrap_tensorflow_internal.so) must not contain the global
+# variable in determinism.cc, since the global variable is already in
+# libtensorflow_framework.so.
+alias(
+    name = "determinism_for_kernels",
+    actual = if_static(":determinism", ":determinism_hdr_lib"),
+    visibility = ["//tensorflow:__subpackages__"],
+)
+
+cc_library(
+    name = "determinism_test_util",
+    hdrs = [":determinism_test_util.h"],
+    deps = [":determinism"],
+)
+
 tf_kernel_library(
     name = "cuda_solvers",
     srcs = ["cuda_solvers.cc"],
-    hdrs = ["cuda_solvers.h"],
+    hdrs = ["gpu_solvers.h"],
     compatible_with = [],
     # @local_config_cuda//cuda:cusolver_static, //third_party/eigen3:blas,
     # and //third_party/libf2c all contain various parts of BLAS, LAPACK,
@@ -619,7 +696,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "rocm_solvers",
     srcs = ["rocm_solvers.cc"],
-    hdrs = ["rocm_solvers.h"],
+    hdrs = ["gpu_solvers.h"],
     compatible_with = [],
     visibility = ["//tensorflow/core/kernels:friends"],
     deps = [
@@ -629,7 +706,9 @@ tf_kernel_library(
         "//tensorflow/stream_executor/lib",
         "//tensorflow/stream_executor/platform:dso_loader",
         "//tensorflow/stream_executor/rocm:rocblas_plugin",
+        "//tensorflow/stream_executor/rocm:rocblas_wrapper",
         "//tensorflow/stream_executor/rocm:rocm_gpu_executor",
+        "//tensorflow/stream_executor/rocm:rocsolver_wrapper",
     ] + if_rocm([
         "@local_config_rocm//rocm:rocprim",
     ]),
@@ -638,7 +717,10 @@ tf_kernel_library(
 tf_kernel_library(
     name = "cuda_sparse",
     srcs = if_cuda(["cuda_sparse.cc"]) + if_rocm(["rocm_sparse.cc"]),
-    hdrs = ["cuda_sparse.h"],
+    hdrs = [
+        "cuda_sparse.h",
+        "gpu_solvers.h",
+    ],
     compatible_with = [],
     deps = [
         ":cuda_solvers",
@@ -648,6 +730,7 @@ tf_kernel_library(
         "//tensorflow/stream_executor/cuda:cusparse_lib",
         "@local_config_cuda//cuda:cub_headers",
     ]) + if_rocm([
+        "//tensorflow/stream_executor/rocm:rocsolver_wrapper",
         "//tensorflow/stream_executor/rocm:hipsparse_wrapper",
     ]),
 )
@@ -779,7 +862,6 @@ tf_cc_test(
         "//conditions:default": [],
     }),
     linkstatic = tf_kernel_tests_linkstatic(),
-    tags = ["no_windows"],  # b/150411480
     deps = [
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",

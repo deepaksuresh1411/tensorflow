@@ -19,6 +19,8 @@ limitations under the License.
 
 #include <cstdint>
 
+#include "absl/types/optional.h"
+#include "tensorflow/c/tf_tensor.h"
 #include "tensorflow/core/tpu/libtftpu.h"
 #include "tensorflow/stream_executor/tpu/c_api_decl.h"
 #include "tensorflow/stream_executor/tpu/proto_helper.h"
@@ -26,7 +28,11 @@ limitations under the License.
 typedef struct TpuSerializedProto TpuSerializedProto;
 
 namespace tensorflow {
+
 class TpuMeshCommonState;
+class TpuEmbeddingEngineState;
+class ResourceMgr;
+
 }  // namespace tensorflow
 
 extern "C" {
@@ -35,6 +41,11 @@ typedef struct XLA_TpuProgram XLA_TpuProgram;
 
 // Enum for choosing sharding/unsharding program from a `XLA_TpuProgram` obj.
 enum TpuProgramShardingType { kInvalid = 0, kMain, kSharding, kUnsharding };
+
+struct TpuProgramFingerprint {
+  const char* bytes;
+  size_t size;
+};
 
 struct TpuExecutableSerializedProto {
   const char* bytes;
@@ -52,6 +63,13 @@ struct HostComputeMetadataSerializedProto {
 };
 
 typedef struct XLA_TpuMeshState XLA_TpuMeshState;
+
+typedef struct XLA_TpuEmbeddingEngineState XLA_TpuEmbeddingEngineState;
+
+typedef struct TpuEmbedding_TensorBatchFixedState
+    TpuEmbedding_TensorBatchFixedState;
+
+typedef struct TpuProfiler TpuProfiler;
 
 typedef struct XLA_DeviceAssignment {
   const char* bytes;
@@ -71,6 +89,8 @@ struct CompilationCacheKeyProperty {
   int32_t num_cores_per_replica;
   int32_t num_replicas;
   const XLA_TpuMeshState* mesh_state;
+  uint64_t session_id;
+  tensorflow::ResourceMgr* resource_mgr;
 };
 
 // Compilation cache key result returning both the key and a more verbose debug
@@ -81,6 +101,27 @@ struct CompilationCacheKeyResult {
 };
 
 typedef struct XLA_TpuNodeContext XLA_TpuNodeContext;
+
+typedef struct TfTpu_OrdinalSelector TfTpuOrdinalSelector;
+
+struct TpuPartitionedCall_Params {
+  bool input_shape_opt;
+  bool group_tensors_for_packing;
+  int32_t minimum_input_tensors_packing;
+  int32_t minimum_output_tensors_packing;
+
+  // Whether to attempt to automatically shard inputs by adding an
+  // XlaSharding op after each input.
+  bool enable_auto_xla_input_sharding;
+
+  // The dimension of each input to shard if
+  // enable_auto_xla_input_sharding is set to true. Negative numbers are
+  // allowed and refers to dimensions starting from the end.
+  int32_t auto_xla_input_sharding_dim;
+
+  // If true, only create one variable on the TPU for each variable on the CPU.
+  bool enable_variable_deduplication;
+};
 
 // Compiles Mlir or TF function computation by lowering into HLO IR and returns
 // `count` number of TPU programs ready for execution.
@@ -103,6 +144,41 @@ TFTPU_CAPI_EXPORT void TpuCompile_XrtCompileAndBuild(
     TpuSerializedProto xrt_computation, const XLA_TpuMeshState* mesh_state,
     XLA_TpuProgram** tpu_programs[], size_t* count, TF_Status* status);
 
+// Creates a TPU profiler that is ready to start profiling.
+TFTPU_CAPI_EXPORT void TpuProfiler_Create(TpuProfiler** tpu_profiler,
+                                          TF_Status* status);
+// Destroys the given TPU profiler.
+TFTPU_CAPI_EXPORT void TpuProfiler_Destroy(TpuProfiler* tpu_profiler);
+// Starts profiling if not already started, returns an error otherwise.
+TFTPU_CAPI_EXPORT void TpuProfiler_Start(TpuProfiler* tpu_profiler,
+                                         TF_Status* status);
+// Stops profiling if not already stopped, returns an error otherwise.
+TFTPU_CAPI_EXPORT void TpuProfiler_Stop(TpuProfiler* tpu_profiler,
+                                        TF_Status* status);
+// Serializes profiled data into `buffer` and returns the size of `buffer`. The
+// profile data held by the TPU driver will be cleared after retrieval.
+//
+// Step 1. Query the size of buffer required into `size_in_bytes`.
+//
+//   size_t size_in_bytes;
+//   TpuProfiler_CollectData(profiler, status, nullptr, &size_in_bytes);
+//
+// Step 2. Retrieve the data into a `buffer` of size `size_in_bytes`.
+//         Subsequently,The TPU driver clears its copy of the profile data.
+//
+//   uint8_t buffer = new uint8_t[size_in_bytes];
+//   TpuProfiler_CollectData(profiler, status, buffer, size_in_bytes);
+//
+// Step 3. Unpack the data into an XSpace.
+//
+//   tensorflow::profiler::XSpace space;
+//   space.ParseFromArray(buffer, size_in_bytes);
+//
+TFTPU_CAPI_EXPORT void TpuProfiler_CollectData(TpuProfiler* tpu_profiler,
+                                               TF_Status* status,
+                                               uint8_t* buffer,
+                                               size_t* size_in_bytes);
+
 // Creates a new TPU mesh state object.
 TFTPU_CAPI_EXPORT XLA_TpuMeshState* TpuMeshState_Create();
 
@@ -113,6 +189,36 @@ TFTPU_CAPI_EXPORT void TpuMeshState_Free(XLA_TpuMeshState* mesh_state);
 // Returns a pointer to an opaque mesh data structure used internally.
 TFTPU_CAPI_EXPORT void* TpuMeshState_MeshCommonState(
     XLA_TpuMeshState* mesh_state);
+
+// Creates a new TPU embedding engine state object.
+TFTPU_CAPI_EXPORT XLA_TpuEmbeddingEngineState* TpuEmbeddingEngineState_Create();
+
+// Delete the given TPU embedding engine state object. Once deleted the object
+// is unusable.
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngineState_Free(
+    XLA_TpuEmbeddingEngineState* engine_state);
+
+// Returns a pointer to an opaque embedding engine state data structure used
+// internally.
+TFTPU_CAPI_EXPORT void* TpuEmbeddingEngineState_GetState(
+    XLA_TpuEmbeddingEngineState* engine_state);
+
+TFTPU_CAPI_EXPORT void TfTpuOrdinalSelector_Create(
+    TfTpuOrdinalSelector** ordinal_selector, int num_cores_per_replica);
+
+TFTPU_CAPI_EXPORT void TfTpuOrdinalSelector_Destroy(
+    TfTpuOrdinalSelector* ordinal_selector);
+
+TFTPU_CAPI_EXPORT void TfTpuOrdinalSelector_GetOrdinal(
+    TfTpuOrdinalSelector* ordinal_selector, absl::optional<uint64_t> key,
+    int64_t* req_id, int64_t* ordinal);
+
+TFTPU_CAPI_EXPORT void TfTpuOrdinalSelector_DequeueFromCoreSelector(
+    TfTpuOrdinalSelector* ordinal_selector, int32_t device_ordinal,
+    int64_t req_id);
+
+TFTPU_CAPI_EXPORT void TfTpu_GetTpuPartitionedCallParams(
+    TpuPartitionedCall_Params* params);
 
 typedef struct TpuExecutable_LoadProgramAndEnqueueToStream_Params {
   int32_t struct_size;
@@ -346,6 +452,12 @@ TFTPU_CAPI_EXPORT void TpuProgram_DeserializeFromGetTpuProgramResponseProto(
     TpuSerializedProto get_tpu_program_response, XLA_TpuProgram* tpu_program,
     TF_Status* status);
 
+TFTPU_CAPI_EXPORT TpuProgramFingerprint
+TpuProgram_GetFingerprint(const XLA_TpuProgram* tpu_program);
+
+TFTPU_CAPI_EXPORT void TpuProgram_DestroyFingerprint(
+    TpuProgramFingerprint fingerprint);
+
 // Checks if whether a TPU compilation is enabled.
 TFTPU_CAPI_EXPORT bool TpuCompile_IsTpuCompilationEnabled();
 
@@ -389,6 +501,199 @@ void TpuNodeContext_CloseTpuHost(TF_Status* status);
 
 void TpuNodeContext_Initialize(int device_ordinal, TF_Status* status);
 
+bool TpuNodeContext_CompactionSupported(int device_ordinal);
+
+// Globally initialize the TPU system for inference.
+TFTPU_CAPI_EXPORT void TfTpu_InitializeTpuModelServer();
+
+typedef struct TpuEmbeddingEngine_ExecutePartitioner_Params {
+  int32_t struct_size;
+  void* priv;
+  TpuSerializedProto tpu_embedding_config;
+  const XLA_TpuMeshState* tpu_mesh_state;
+  // out
+  size_t* common_config_size;
+  char** common_config;
+  TF_Status* status;
+} TpuEmbeddingEngine_ExecutePartitioner_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_ExecutePartitioner(
+    TpuEmbeddingEngine_ExecutePartitioner_Params* params);
+
+typedef struct TpuEmbeddingEngine_ConfigureMemory_Params {
+  int32_t struct_size;
+  void* priv;
+
+  int num_inputs;
+  size_t common_config_string_size;
+  const char* common_config_string;
+  TpuSerializedProto tpu_embedding_config;
+
+  // out
+  size_t* task_host_config_size;
+  char** task_host_config;
+  TF_Status* status;
+} TpuEmbeddingEngine_ConfigureMemory_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_ConfigureMemory(
+    TpuEmbeddingEngine_ConfigureMemory_Params* params);
+
+typedef struct TpuEmbeddingEngine_ConfigureHost_Params {
+  int32_t struct_size;
+  void* priv;
+
+  int num_inputs;
+  size_t common_config_string_size;
+  const char* common_config_string;
+  size_t task_host_config_size;
+  const TpuSerializedProto* task_host_config;
+  TpuSerializedProto tpu_embedding_config;
+
+  // out
+  size_t* host_config_size;
+  char** host_config;
+  TF_Status* status;
+} TpuEmbeddingEngine_ConfigureHost_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_ConfigureHost(
+    TpuEmbeddingEngine_ConfigureHost_Params* params);
+
+typedef struct TpuEmbeddingEngine_ConfigureCommunication_Params {
+  int32_t struct_size;
+  void* priv;
+
+  size_t host_config_size;
+  const TpuSerializedProto* host_config;
+
+  // out
+  TF_Status* status;
+} TpuEmbeddingEngine_ConfigureCommunication_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_ConfigureCommunication(
+    TpuEmbeddingEngine_ConfigureCommunication_Params* params);
+
+typedef struct TpuEmbeddingEngine_FinalizeConfiguration_Params {
+  int32_t struct_size;
+  void* priv;
+  const XLA_TpuMeshState* tpu_mesh_state;
+
+  size_t host_config_size;
+  const TpuSerializedProto* host_config;
+
+  // out
+  TF_Status* status;
+} TpuEmbeddingEngine_FinalizeConfiguration_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_FinalizeConfiguration(
+    TpuEmbeddingEngine_FinalizeConfiguration_Params* params);
+
+typedef struct TpuEmbeddingEngine_IsInitialized_Params {
+  int32_t struct_size;
+  void* priv;
+
+  size_t config_string_size;
+  const char* config_string;
+
+  // out
+  bool* is_tpu_embedding_initialized;
+  TF_Status* status;
+} TpuEmbeddingEngine_IsInitialized_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_IsInitialized(
+    TpuEmbeddingEngine_IsInitialized_Params* params);
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_WriteParameters(
+    TpuEmbeddingEngineParameters* params, TF_Status* status);
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_ReadParameters(
+    TpuEmbeddingEngineParameters* params, TF_Status* status);
+
+typedef struct TpuEmbeddingEngine_EnqueueTensorBatch_Params {
+  int32_t struct_size;
+  void* priv;
+
+  int32_t mode;
+  int32_t local_device_ordinal;
+  TpuEmbedding_TensorBatchFixedState* fixed_state;
+
+  TF_Tensor** sample_indices_tensors;
+  size_t sample_indices_tensors_size;
+  TF_Tensor** embedding_indices_tensors;
+  size_t embedding_indices_tensors_size;
+  TF_Tensor** aggregation_weights_tensors;
+  size_t aggregation_weights_tensors_size;
+  TF_Status* status;
+} TpuEmbeddingEngine_EnqueueTensorBatch_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_EnqueueTensorBatch(
+    TpuEmbeddingEngine_EnqueueTensorBatch_Params* params);
+
+typedef struct TpuEmbedding_TensorBatchFixedState_Create_Params {
+  int32_t struct_size;
+  void* priv;
+
+  size_t combiners_size;
+  char** combiners;
+
+  // out
+  TF_Status* status;
+} TpuEmbedding_TensorBatchFixedState_Create_Params;
+
+TFTPU_CAPI_EXPORT TpuEmbedding_TensorBatchFixedState*
+TpuEmbeddingTensorBatchFixedState_Create(
+    TpuEmbedding_TensorBatchFixedState_Create_Params* params);
+TFTPU_CAPI_EXPORT void TpuEmbeddingTensorBatchFixedState_Destroy(
+    TpuEmbedding_TensorBatchFixedState* fixed_state);
+
+typedef struct TpuEmbeddingEngine_RecvActivationsComputation_Params {
+  int32_t struct_size;
+  void* priv;
+
+  size_t config_string_size;
+  XLA_Shape* deduplication_data_shape;
+  const XLA_TpuMeshState* tpu_mesh_state;
+
+  // out
+  TpuSerializedProto* xla_computation;
+  TF_Status* status;
+} TpuEmbeddingEngine_RecvActivationsComputation_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_RecvActivationsComputation(
+    TpuEmbeddingEngine_RecvActivationsComputation_Params* params);
+
+typedef struct
+    TpuEmbeddingEngine_RecvTPUEmbeddingDeduplicationDataComputation_Params {
+  int32_t struct_size;
+  void* priv;
+
+  const XLA_TpuMeshState* tpu_mesh_state;
+  // out
+  TpuSerializedProto* xla_computation;
+  TF_Status* status;
+} TpuEmbeddingEngine_RecvTPUEmbeddingDeduplicationDataComputation_Params;
+
+TFTPU_CAPI_EXPORT void
+TpuEmbeddingEngine_RecvTPUEmbeddingDeduplicationDataComputation(
+    TpuEmbeddingEngine_RecvTPUEmbeddingDeduplicationDataComputation_Params*
+        params);
+
+typedef struct TpuEmbeddingEngine_SendTPUEmbeddingGradientsComputation_Params {
+  int32_t struct_size;
+  void* priv;
+
+  int32_t num_inputs;
+  const XLA_TpuMeshState* tpu_mesh_state;
+  XLA_Shape* learning_rate_tuple_shape;
+  XLA_Shape* deduplication_data_shape;
+  XLA_Shape* gradient_tuple_shape;
+  // out
+  TpuSerializedProto* xla_computation;
+  TF_Status* status;
+} TpuEmbeddingEngine_SendTPUEmbeddingGradientsComputation_Params;
+
+TFTPU_CAPI_EXPORT void TpuEmbeddingEngine_SendTPUEmbeddingGradientsComputation(
+    TpuEmbeddingEngine_SendTPUEmbeddingGradientsComputation_Params* params);
+
 struct TfTpu_OpsApiFn {
   TFTPU_ADD_FN_IN_STRUCT(TpuCompile_CompileAndBuild);
   TFTPU_ADD_FN_IN_STRUCT(TpuCompile_XrtCompileAndBuild);
@@ -397,11 +702,22 @@ struct TfTpu_OpsApiFn {
   TFTPU_ADD_FN_IN_STRUCT(TpuMeshState_Free);
   TFTPU_ADD_FN_IN_STRUCT(TpuMeshState_MeshCommonState);
 
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngineState_Create);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngineState_Free);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngineState_GetState);
+
+  TFTPU_ADD_FN_IN_STRUCT(TpuProfiler_Create);
+  TFTPU_ADD_FN_IN_STRUCT(TpuProfiler_Destroy);
+  TFTPU_ADD_FN_IN_STRUCT(TpuProfiler_Start);
+  TFTPU_ADD_FN_IN_STRUCT(TpuProfiler_Stop);
+  TFTPU_ADD_FN_IN_STRUCT(TpuProfiler_CollectData);
+
   TFTPU_ADD_FN_IN_STRUCT(TpuExecutable_LoadProgramAndEnqueueToStream);
   TFTPU_ADD_FN_IN_STRUCT(HardwareLayout_HostShapeToDeviceShape);
   TFTPU_ADD_FN_IN_STRUCT(HardwareLayout_ShapeSize);
   TFTPU_ADD_FN_IN_STRUCT(HardwareLayout_ShapeSizeCompact);
   TFTPU_ADD_FN_IN_STRUCT(HardwareLayout_ShapeSizeCompactRaw);
+
   TFTPU_ADD_FN_IN_STRUCT(TpuExecute_RuntimeInputToPaddedData);
 
   TFTPU_ADD_FN_IN_STRUCT(ConfigureDistributedTpuOp_DoWork);
@@ -435,6 +751,8 @@ struct TfTpu_OpsApiFn {
   TFTPU_ADD_FN_IN_STRUCT(TpuProgram_SerializeTpuExecutable);
   TFTPU_ADD_FN_IN_STRUCT(TpuProgram_SerializeCompilerMetadata);
   TFTPU_ADD_FN_IN_STRUCT(TpuProgram_DeserializeFromGetTpuProgramResponseProto);
+  TFTPU_ADD_FN_IN_STRUCT(TpuProgram_GetFingerprint);
+  TFTPU_ADD_FN_IN_STRUCT(TpuProgram_DestroyFingerprint);
 
   TFTPU_ADD_FN_IN_STRUCT(TpuCompile_IsTpuCompilationEnabled);
   TFTPU_ADD_FN_IN_STRUCT(TpuCompile_ShouldTpuCompileOpIgnoreCancellation);
@@ -449,6 +767,32 @@ struct TfTpu_OpsApiFn {
   TFTPU_ADD_FN_IN_STRUCT(TpuNodeContext_StopChipHeartbeats);
   TFTPU_ADD_FN_IN_STRUCT(TpuNodeContext_CloseTpuHost);
   TFTPU_ADD_FN_IN_STRUCT(TpuNodeContext_Initialize);
+  TFTPU_ADD_FN_IN_STRUCT(TpuNodeContext_CompactionSupported);
+
+  TFTPU_ADD_FN_IN_STRUCT(TfTpu_InitializeTpuModelServer);
+
+  TFTPU_ADD_FN_IN_STRUCT(TfTpuOrdinalSelector_Create);
+  TFTPU_ADD_FN_IN_STRUCT(TfTpuOrdinalSelector_Destroy);
+  TFTPU_ADD_FN_IN_STRUCT(TfTpuOrdinalSelector_GetOrdinal);
+  TFTPU_ADD_FN_IN_STRUCT(TfTpuOrdinalSelector_DequeueFromCoreSelector);
+  TFTPU_ADD_FN_IN_STRUCT(TfTpu_GetTpuPartitionedCallParams);
+
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_ExecutePartitioner);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_ConfigureMemory);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_ConfigureHost);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_ConfigureCommunication);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_FinalizeConfiguration);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_IsInitialized);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_WriteParameters);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_ReadParameters);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingTensorBatchFixedState_Create);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingTensorBatchFixedState_Destroy);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_EnqueueTensorBatch);
+  TFTPU_ADD_FN_IN_STRUCT(TpuEmbeddingEngine_RecvActivationsComputation);
+  TFTPU_ADD_FN_IN_STRUCT(
+      TpuEmbeddingEngine_RecvTPUEmbeddingDeduplicationDataComputation);
+  TFTPU_ADD_FN_IN_STRUCT(
+      TpuEmbeddingEngine_SendTPUEmbeddingGradientsComputation);
 };
 
 }  // extern "C"

@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for Collective Operations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import time
 
 from tensorflow.core.protobuf import config_pb2
@@ -444,6 +440,8 @@ class CollectiveOpTest(test.TestCase):
     self.assertAllClose(results_[1], expected_output_, rtol=1e-5, atol=1e-5)
 
   @test_util.run_v2_only
+  @test_util.disable_tfrt(
+      'b/177270918: TFRT has dead lock when executing collective ops.')
   def testCollectiveGroupSizeMismatch(self):
     cpus = config.list_physical_devices('CPU')
     self.assertEqual(len(cpus), 1)

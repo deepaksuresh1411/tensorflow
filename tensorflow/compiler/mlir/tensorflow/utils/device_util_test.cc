@@ -60,7 +60,7 @@ class FakeDevice : public Device {
 
 TEST(DeviceUtilTest, AddDeviceToOp) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
 
   const std::string cpu0 = "/job:worker/replica:0/task:0/device:CPU:0";
@@ -77,7 +77,7 @@ TEST(DeviceUtilTest, AddDeviceToOp) {
   AddDevicesToOp(*module_ref, &device_set);
 
   auto devices_attr =
-      module_ref->getAttrOfType<mlir::DictionaryAttr>("tf.devices");
+      (*module_ref)->getAttrOfType<mlir::DictionaryAttr>("tf.devices");
   ASSERT_NE(devices_attr, nullptr);
   ASSERT_EQ(devices_attr.size(), 3);
 
@@ -101,16 +101,16 @@ TEST(DeviceUtilTest, AddDeviceToOp) {
 
 TEST(DeviceUtilTest, AddDeviceToOpNullDeviceSet) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
 
   AddDevicesToOp(*module_ref, /*device_set=*/nullptr);
-  EXPECT_EQ(module_ref->getAttr("tf.devices"), nullptr);
+  EXPECT_EQ((*module_ref)->getAttr("tf.devices"), nullptr);
 }
 
 TEST(DeviceUtilTest, GetDevicesFromOpNoDevicesAttribute) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
 
   mlir::TF::RuntimeDevices devices;
@@ -119,10 +119,10 @@ TEST(DeviceUtilTest, GetDevicesFromOpNoDevicesAttribute) {
 
 TEST(DeviceUtilTest, GetDevicesFromOpBadDevicesAttributeType) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
   mlir::Builder builder(*module_ref);
-  module_ref->setAttr("tf.devices", builder.getBoolAttr(false));
+  (*module_ref)->setAttr("tf.devices", builder.getBoolAttr(false));
 
   mlir::TF::RuntimeDevices devices;
   EXPECT_TRUE(mlir::failed(GetDevicesFromOp(*module_ref, &devices)));
@@ -130,10 +130,10 @@ TEST(DeviceUtilTest, GetDevicesFromOpBadDevicesAttributeType) {
 
 TEST(DeviceUtilTest, GetDevicesFromOpBadDevicesAttributeArraySubtype) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
   mlir::Builder builder(*module_ref);
-  module_ref->setAttr("tf.devices", builder.getI32ArrayAttr({8}));
+  (*module_ref)->setAttr("tf.devices", builder.getI32ArrayAttr({8}));
 
   mlir::TF::RuntimeDevices devices;
   EXPECT_TRUE(mlir::failed(GetDevicesFromOp(*module_ref, &devices)));
@@ -141,12 +141,13 @@ TEST(DeviceUtilTest, GetDevicesFromOpBadDevicesAttributeArraySubtype) {
 
 TEST(DeviceUtilTest, GetDevicesFromOpBadDevicesInDevicesAttribute) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
   mlir::Builder builder(*module_ref);
-  module_ref->setAttr("tf.devices",
-                      builder.getDictionaryAttr(builder.getNamedAttr(
-                          "bad_device", builder.getDictionaryAttr({}))));
+  (*module_ref)
+      ->setAttr("tf.devices",
+                builder.getDictionaryAttr(builder.getNamedAttr(
+                    "bad_device", builder.getDictionaryAttr({}))));
 
   mlir::TF::RuntimeDevices devices;
   EXPECT_TRUE(mlir::failed(GetDevicesFromOp(*module_ref, &devices)));
@@ -154,14 +155,14 @@ TEST(DeviceUtilTest, GetDevicesFromOpBadDevicesInDevicesAttribute) {
 
 TEST(DeviceUtilTest, GetDevicesFromOpValidDeviceInDevicesAttribute) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
   mlir::Builder builder(*module_ref);
 
   auto device_dict = builder.getDictionaryAttr(
       {builder.getNamedAttr("/job:worker/replica:0/task:0/device:CPU:0",
                             builder.getDictionaryAttr({}))});
-  module_ref->setAttr("tf.devices", device_dict);
+  (*module_ref)->setAttr("tf.devices", device_dict);
 
   mlir::TF::RuntimeDevices devices;
   EXPECT_TRUE(mlir::succeeded(GetDevicesFromOp(*module_ref, &devices)));
@@ -174,7 +175,7 @@ TEST(DeviceUtilTest, GetDevicesFromOpValidDeviceInDevicesAttribute) {
 
 TEST(DeviceUtilTest, GetGpuDeviceMetadata) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
 
   mlir::Builder builder(*module_ref);
@@ -188,7 +189,7 @@ TEST(DeviceUtilTest, GetGpuDeviceMetadata) {
                                              builder.getI32IntegerAttr(2),
                                              module_ref->getContext())));
 
-  module_ref->setAttr("tf.devices", builder.getDictionaryAttr(metadata));
+  (*module_ref)->setAttr("tf.devices", builder.getDictionaryAttr(metadata));
 
   mlir::TF::RuntimeDevices devices;
   EXPECT_TRUE(mlir::succeeded(GetDevicesFromOp(*module_ref, &devices)));

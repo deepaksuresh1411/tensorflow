@@ -68,6 +68,12 @@ class DeviceMemAllocator : public SubAllocator {
     }
   }
 
+  bool SupportsCoalescing() const override { return false; }
+
+  AllocatorMemoryType GetMemoryType() const override {
+    return AllocatorMemoryType::kDevice;
+  }
+
  private:
   se::StreamExecutor* stream_exec_;  // not owned, non-null
   const PlatformDeviceId device_id_;

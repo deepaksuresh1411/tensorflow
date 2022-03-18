@@ -16,12 +16,12 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_SERVICE_GPU_CONVOLUTION_THUNK_H_
 #define TENSORFLOW_COMPILER_XLA_SERVICE_GPU_CONVOLUTION_THUNK_H_
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/types/optional.h"
 #include "tensorflow/compiler/xla/service/buffer_assignment.h"
 #include "tensorflow/compiler/xla/service/gpu/buffer_allocations.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_conv_runner.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_executable.h"
-#include "tensorflow/compiler/xla/service/gpu/hlo_execution_profiler.h"
 #include "tensorflow/compiler/xla/service/gpu/thunk.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_instructions.h"
@@ -42,7 +42,7 @@ class ConvolutionThunk : public Thunk {
   // Constructs a thunk for launching a DNN convolution.
   //
   // operand_slices should be in the same order as cudnn_call->operands().
-  ConvolutionThunk(ThunkInfo thunk_info, GpuConvConfig&& config,
+  ConvolutionThunk(ThunkInfo thunk_info, GpuConvConfig config,
                    std::vector<BufferAllocation::Slice> operand_slices,
                    BufferAllocation::Slice result_slice,
                    BufferAllocation::Slice scratch_slice);
@@ -56,9 +56,15 @@ class ConvolutionThunk : public Thunk {
   std::vector<BufferAllocation::Slice> operand_buffers_;
   BufferAllocation::Slice result_buffer_;
   BufferAllocation::Slice scratch_buffer_;
+  MaybeFusedConvRunner& GetOrCreateRunner(
+      const stream_executor::Stream* stream);
 
   // Convolution config
   const GpuConvConfig config_;
+  absl::Mutex mu_;
+  absl::flat_hash_map<const stream_executor::Stream*,
+                      std::unique_ptr<MaybeFusedConvRunner>>
+      runner_cache_ ABSL_GUARDED_BY(mu_);
 };
 
 }  // namespace gpu

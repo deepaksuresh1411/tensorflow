@@ -86,7 +86,12 @@ struct LaunchFusedMatMulOp<CPUDevice, T> {
 
     BiasAddArgs<T> bias_add_args;
     if (BiasAddArgs<T>::IsSupported(fusion)) {
-      OP_REQUIRES_OK(context, InitBiasAddArgs(context, &bias_add_args));
+      if (fusion == FusedComputationType::kBiasAddWithLeakyRelu) {
+        OP_REQUIRES_OK(context, InitBiasAddArgs(context, &bias_add_args,
+                                                &fusion_args.leakyrelu_alpha));
+      } else {
+        OP_REQUIRES_OK(context, InitBiasAddArgs(context, &bias_add_args));
+      }
     }
 
     switch (fusion) {
@@ -101,6 +106,9 @@ struct LaunchFusedMatMulOp<CPUDevice, T> {
         break;
       case FusedComputationType::kBiasAddWithElu:
         executeWithOutputKernel(WithBiasAddAndElu<T>(bias_add_args));
+        break;
+      case FusedComputationType::kBiasAddWithLeakyRelu:
+        executeWithOutputKernel(WithBiasAddAndLeakyRelu<T>(bias_add_args));
         break;
       case FusedComputationType::kUndefined:
         OP_REQUIRES_OK(context, errors::Internal("Fusion type is undefined"));
@@ -148,10 +156,13 @@ class FusedMatMulOp : public OpKernel {
 
     using FCT = FusedComputationType;
     if (std::is_same<Device, CPUDevice>::value) {
-      patterns = {{FCT::kBiasAdd, {"BiasAdd"}},
-                  {FCT::kBiasAddWithRelu, {"BiasAdd", "Relu"}},
-                  {FCT::kBiasAddWithRelu6, {"BiasAdd", "Relu6"}},
-                  {FCT::kBiasAddWithElu, {"BiasAdd", "Elu"}}};
+      patterns = {
+          {FCT::kBiasAdd, {"BiasAdd"}},
+          {FCT::kBiasAddWithRelu, {"BiasAdd", "Relu"}},
+          {FCT::kBiasAddWithRelu6, {"BiasAdd", "Relu6"}},
+          {FCT::kBiasAddWithElu, {"BiasAdd", "Elu"}},
+          {FCT::kBiasAddWithLeakyRelu, {"BiasAdd", "LeakyRelu"}},
+      };
     }
 
     OP_REQUIRES_OK(context, InitializeFusedComputation(
@@ -164,6 +175,10 @@ class FusedMatMulOp : public OpKernel {
     const Tensor& b = ctx->input(1);
 
     // Check that the dimensions of the two matrices are valid.
+    OP_REQUIRES(ctx, a.dims() == b.dims(),
+                errors::InvalidArgument("In[0] and In[1] has different ndims: ",
+                                        a.shape().DebugString(), " vs. ",
+                                        b.shape().DebugString()));
     OP_REQUIRES(
         ctx, TensorShapeUtils::IsMatrix(a.shape()),
         errors::InvalidArgument("In[0] is not a matrix. Instead it has shape ",

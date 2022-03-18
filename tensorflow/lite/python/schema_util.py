@@ -15,10 +15,6 @@
 # ==============================================================================
 """Schema utilities to get builtin code from operator code."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.util import all_util
 
 
@@ -26,7 +22,7 @@ def get_builtin_code_from_operator_code(opcode):
   """Return the builtin code of the given operator code.
 
   The following method is introduced to resolve op builtin code shortage
-  problem. The new builtin opreator will be assigned to the extended builtin
+  problem. The new builtin operator will be assigned to the extended builtin
   code field in the flatbuffer schema. Those methods helps to hide builtin code
   details.
 

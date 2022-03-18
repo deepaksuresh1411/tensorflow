@@ -30,15 +30,12 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/common/task/gpu_tensor.h"
 #include "tensorflow/lite/delegates/gpu/common/task/serialization_base_generated.h"
 #include "tensorflow/lite/delegates/gpu/common/task/tensor_desc.h"
+#include "tensorflow/lite/delegates/gpu/common/task/texture2d_desc.h"
 #include "tensorflow/lite/delegates/gpu/common/task/tuning_type.h"
 #include "tensorflow/lite/delegates/gpu/common/types.h"
 
 namespace tflite {
 namespace gpu {
-namespace cl {
-class ClOperation;
-}
-
 // kCustom: default value
 //   GPUOperation::GetGridSize must be overloaded
 // kWBToX_HDToY_SToZ:
@@ -105,11 +102,25 @@ class GPUOperation {
   void SetSrc(GpuSpatialTensor* ptr, int index = 0);
   void SetDst(GpuSpatialTensor* ptr, int index = 0);
 
-  virtual void GetPossibleKernelWorkGroups(
-      TuningType tuning_type, const GpuInfo& gpu_info,
-      const KernelInfo& kernel_info, std::vector<int3>* work_groups) const;
+  struct DispatchInfo {
+    int3 work_group_size;
+    int3 work_groups_count;
+  };
+  void GetPossibleDispatches(TuningType tuning_type, const GpuInfo& gpu_info,
+                             const KernelInfo& kernel_info,
+                             std::vector<DispatchInfo>* dispatches) const;
 
-  void AssembleCode(const GpuInfo& gpu_info);
+  const std::vector<std::string>& GetSrcTensorsNames() const {
+    return src_tensors_names_;
+  }
+  const std::vector<std::string>& GetDstTensorsNames() const {
+    return dst_tensors_names_;
+  }
+  const std::vector<GpuSpatialTensor*>& GetSrcTensors() const { return src_; }
+  const std::vector<GpuSpatialTensor*>& GetDstTensors() const { return dst_; }
+  const int3& GetWorkGroupsCount() const { return work_groups_count_; }
+
+  absl::Status AssembleCode(const GpuInfo& gpu_info);
 
   virtual absl::Status PostCompileCheck(const GpuInfo& gpu_info,
                                         const KernelInfo& kernel_info) {
@@ -122,6 +133,8 @@ class GPUOperation {
                     const TensorDescriptor& desc);
   void AddSrcBuffer(const std::string& buffer_name,
                     const BufferDescriptor& desc);
+  void AddSrcTexture2D(const std::string& texture_name,
+                       const Texture2DDescriptor& desc);
   void AddDstTensor(const std::string& tensor_name,
                     const TensorDescriptor& desc);
 
@@ -129,6 +142,12 @@ class GPUOperation {
 
   // for linking
   void AddUniquePostfix(const std::string& unique_postfix);
+
+  virtual absl::Status BindArguments(ArgumentsBinder* args) {
+    return absl::OkStatus();
+  }
+  void RecalculateGridSize() { grid_size_ = GetGridSize(); }
+  void RecalculateWorkGroupsCount();
 
   Arguments args_;
   std::string code_;
@@ -143,17 +162,24 @@ class GPUOperation {
   // applicable only with elementwise_ = true;
   bool check_src_channels_size_ = false;
 
+  // for profiling
+  uint64_t flops_ = 0;
+  // size in bytes of constant gpu_objects inside args_
+  uint64_t const_args_size_ = 0;
+
+  // Must be called before const generic objects in args_ released.
+  void CalculateConstArgsSize();
+
  protected:
-  friend class cl::ClOperation;
   friend flatbuffers::Offset<tflite::gpu::data::GPUOperation> Encode(
       const GPUOperation& op, flatbuffers::FlatBufferBuilder* builder);
   friend absl::Status Decode(const tflite::gpu::data::GPUOperation* fb_op,
                              GPUOperation* op);
 
-  virtual absl::Status BindArguments(ArgumentsBinder* args) {
-    return absl::OkStatus();
-  }
   virtual int3 GetGridSize() const;
+  virtual void GetPossibleKernelWorkGroups(
+      TuningType tuning_type, const GpuInfo& gpu_info,
+      const KernelInfo& kernel_info, std::vector<int3>* work_groups) const;
 
   // Defines operation calculation precision and format of src/dst tensors.
   OperationDef definition_;

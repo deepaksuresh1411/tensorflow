@@ -36,6 +36,16 @@ namespace {
 struct OptimizeFunctionalOpsPass
     : public PassWrapper<OptimizeFunctionalOpsPass, OperationPass<ModuleOp>> {
   void runOnOperation() override;
+
+  StringRef getArgument() const final {
+    // This is the argument used to refer to the pass in
+    // the textual format (on the commandline for example).
+    return "tfl-optimize-functional-ops";
+  }
+  StringRef getDescription() const final {
+    // This is a brief description of the pass.
+    return "Optimize TensorFlow functional ops";
+  }
 };
 
 // Updates function return type of the given functions to match the terminator
@@ -50,7 +60,7 @@ void UpdateFuncType(FuncOp func) {
   if (llvm::makeArrayRef(return_types) == func_type.getResults()) return;
 
   auto updated_type =
-      FunctionType::get(func_type.getInputs(), return_types, func.getContext());
+      FunctionType::get(func.getContext(), func_type.getInputs(), return_types);
   func.setType(updated_type);
 }
 
@@ -59,7 +69,7 @@ bool IsSideEffectFree(FuncOp func) {
   return !func.getBody()
               .walk([&](Operation* op) {
                 if (!MemoryEffectOpInterface::hasNoEffect(op) &&
-                    !op->isKnownTerminator())
+                    !op->hasTrait<OpTrait::IsTerminator>())
                   return WalkResult::interrupt();
                 return WalkResult::advance();
               })
@@ -79,7 +89,7 @@ class FoldIfOp : public OpRewritePattern<TF::IfOp> {
     // and therefore one terminator op. So, that function return type can be
     // updated if operands' shapes change after inlining. Without this
     // restriction, it would require tensor cast ops.
-    FuncOp parent_op = op.getParentOfType<FuncOp>();
+    FuncOp parent_op = op->getParentOfType<FuncOp>();
     if (!llvm::hasSingleElement(parent_op)) return failure();
 
     // Find the then and else branch functions.
@@ -107,7 +117,7 @@ class FoldIfOp : public OpRewritePattern<TF::IfOp> {
       return failure();
 
     // Identify the branch to inline.
-    bool cond_value = (*cond.int_value_begin()).getSExtValue();
+    bool cond_value = (*cond.value_begin<APInt>()).getSExtValue();
     FuncOp func = cond_value ? then_func : else_func;
 
     // Make sure that the function has exactly one block to simplify inlining.
@@ -123,7 +133,7 @@ class FoldIfOp : public OpRewritePattern<TF::IfOp> {
     for (auto& op_to_inline : func.front()) {
       // If this is a terminator, identify the values to use to replace the
       // original If op.
-      if (op_to_inline.isKnownTerminator()) {
+      if (op_to_inline.hasTrait<OpTrait::IsTerminator>()) {
         updated_results.reserve(op_to_inline.getNumOperands());
         for (Value operand : op_to_inline.getOperands())
           updated_results.push_back(mapper.lookup(operand));
@@ -145,16 +155,15 @@ class FoldIfOp : public OpRewritePattern<TF::IfOp> {
 };
 
 void OptimizeFunctionalOpsPass::runOnOperation() {
-  OwningRewritePatternList patterns;
+  RewritePatternSet patterns(&getContext());
 
-  patterns.insert<FoldIfOp>(&getContext());
+  patterns.add<FoldIfOp>(&getContext());
 
   ModuleOp module = getOperation();
-  applyPatternsAndFoldGreedily(module, std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(module, std::move(patterns));
 }
 
-PassRegistration<OptimizeFunctionalOpsPass> pass(
-    "tfl-optimize-functional-ops", "Optimize TensorFlow functional ops");
+PassRegistration<OptimizeFunctionalOpsPass> pass;
 }  // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>> CreateOptimizeFunctionalOpsPass() {

@@ -21,7 +21,7 @@ limitations under the License.
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/TypeUtilities.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/lhlo_ops.h"
+#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/lhlo/IR/lhlo_ops.h"
 #include "tensorflow/compiler/xla/literal.h"
 #include "tensorflow/core/platform/bfloat16.h"
 #include "tensorflow/core/platform/logging.h"
@@ -44,11 +44,18 @@ template <typename CppType>
       type, llvm::makeArrayRef(data_span.data(), data_span.size()));
 }
 
-StatusOr<llvm::SmallVector<AffineMap, 1>> GetPermutationIfAvailable(
-    const Shape& shape, mlir::Builder builder) {
+StatusOr<AffineMap> GetPermutationIfAvailable(const Shape& shape,
+                                              mlir::Builder builder) {
+  // N.B. IsMonotonicWithDim0Major ignores tiling, and I can't change it because
+  // some XLA code relies on it treating tiled layouts as equivalent to untiled
+  // layouts, so the check to rule out tiling has to come /before/ the
+  // early-return branch, or we'd miss tiled monotonic layouts.
+  if (!shape.layout().tiles().empty()) {
+    return tensorflow::errors::Internal("Tiled layouts are not yet supported");
+  }
   if (!shape.has_layout() ||
       LayoutUtil::IsMonotonicWithDim0Major(shape.layout())) {
-    return llvm::SmallVector<AffineMap, 1>{};
+    return AffineMap();
   }
   if (!shape.is_static()) {
     return tensorflow::errors::Internal(
@@ -56,15 +63,26 @@ StatusOr<llvm::SmallVector<AffineMap, 1>> GetPermutationIfAvailable(
   }
   int64_t accumulated_stride = 1;
   llvm::SmallVector<int64_t, 4> strides(shape.rank(), 1);
-  for (int64 dim : LayoutUtil::MinorToMajor(shape)) {
+  for (int64_t dim : LayoutUtil::MinorToMajor(shape)) {
     strides[dim] = accumulated_stride;
     accumulated_stride *= shape.dimensions(dim);
   }
   if (accumulated_stride == 0) {
-    return llvm::SmallVector<AffineMap, 1>{};
+    return AffineMap();
   }
-  return llvm::SmallVector<AffineMap, 1>{
-      makeStridedLinearLayoutMap(strides, /*offset=*/0, builder.getContext())};
+  return makeStridedLinearLayoutMap(strides, /*offset=*/0,
+                                    builder.getContext());
+}
+
+template <typename T>
+void CopyDenseElementsBy(mlir::DenseElementsAttr data,
+                         std::vector<uint8_t>* output) {
+  output->resize(data.getNumElements() * sizeof(T));
+  int i = 0;
+  for (T element : data.getValues<T>()) {
+    std::memcpy(&(*output)[i], &element, sizeof(T));
+    i += sizeof(T);
+  }
 }
 
 }  // namespace
@@ -104,21 +122,21 @@ StatusOr<mlir::DenseElementsAttr> CreateDenseElementsAttrFromLiteral(
     case PrimitiveType::F64:
       return CreateDenseAttrFromLiteral<double>(type, literal);
     case PrimitiveType::S8:
-      return CreateDenseAttrFromLiteral<int8>(type, literal);
+      return CreateDenseAttrFromLiteral<int8_t>(type, literal);
     case PrimitiveType::S16:
-      return CreateDenseAttrFromLiteral<int16>(type, literal);
+      return CreateDenseAttrFromLiteral<int16_t>(type, literal);
     case PrimitiveType::S32:
-      return CreateDenseAttrFromLiteral<int32>(type, literal);
+      return CreateDenseAttrFromLiteral<int32_t>(type, literal);
     case PrimitiveType::S64:
-      return CreateDenseAttrFromLiteral<int64>(type, literal);
+      return CreateDenseAttrFromLiteral<int64_t>(type, literal);
     case PrimitiveType::U8:
-      return CreateDenseAttrFromLiteral<uint8>(type, literal);
+      return CreateDenseAttrFromLiteral<uint8_t>(type, literal);
     case PrimitiveType::U16:
-      return CreateDenseAttrFromLiteral<uint16>(type, literal);
+      return CreateDenseAttrFromLiteral<uint16_t>(type, literal);
     case PrimitiveType::U32:
-      return CreateDenseAttrFromLiteral<uint32>(type, literal);
+      return CreateDenseAttrFromLiteral<uint32_t>(type, literal);
     case PrimitiveType::U64:
-      return CreateDenseAttrFromLiteral<uint64>(type, literal);
+      return CreateDenseAttrFromLiteral<uint64_t>(type, literal);
     case PrimitiveType::C64:
       return CreateDenseAttrFromLiteral<complex64>(type, literal);
     case PrimitiveType::C128:
@@ -129,8 +147,77 @@ StatusOr<mlir::DenseElementsAttr> CreateDenseElementsAttrFromLiteral(
   }
 }
 
+Status CopyDenseElementsDataToXlaFormat(mlir::DenseElementsAttr data,
+                                        std::vector<uint8_t>* output) {
+  mlir::Type element_type = data.getType().getElementType();
+
+  // TODO(hinsu): Support remaining XLA primitive types.
+  if (element_type.isInteger(1)) {
+    CopyDenseElementsBy<bool>(data, output);
+    return Status::OK();
+  }
+  if (element_type.isInteger(8)) {
+    CopyDenseElementsBy<uint8_t>(data, output);
+    return Status::OK();
+  }
+  if (element_type.isInteger(16)) {
+    CopyDenseElementsBy<uint16_t>(data, output);
+    return Status::OK();
+  }
+  if (element_type.isInteger(32)) {
+    CopyDenseElementsBy<uint32_t>(data, output);
+    return Status::OK();
+  }
+  if (element_type.isInteger(64)) {
+    CopyDenseElementsBy<uint64_t>(data, output);
+    return Status::OK();
+  }
+  if (element_type.isBF16()) {
+    CopyDenseElementsBy<bfloat16>(data, output);
+    return Status::OK();
+  }
+  if (element_type.isF16()) {
+    CopyDenseElementsBy<half>(data, output);
+    return Status::OK();
+  }
+  if (element_type.isF32()) {
+    CopyDenseElementsBy<float>(data, output);
+    return Status::OK();
+  }
+  if (element_type.isF64()) {
+    CopyDenseElementsBy<double>(data, output);
+    return Status::OK();
+  }
+  if (auto complex_type = element_type.dyn_cast<mlir::ComplexType>()) {
+    if (complex_type.getElementType().isF32()) {
+      CopyDenseElementsBy<complex64>(data, output);
+      return Status::OK();
+    }
+    if (complex_type.getElementType().isF64()) {
+      CopyDenseElementsBy<complex128>(data, output);
+      return Status::OK();
+    }
+  }
+  return tensorflow::errors::Internal(
+      "Unsupported type in CopyDenseElementsDataToXlaFormat");
+}
+
+StatusOr<int> GetElementTypeBytes(mlir::Type type) {
+  if (type.isInteger(1)) {
+    return 1;
+  }
+  if (auto complex_type = type.dyn_cast<mlir::ComplexType>()) {
+    TF_ASSIGN_OR_RETURN(int bytes,
+                        GetElementTypeBytes(complex_type.getElementType()));
+    return bytes * 2;
+  }
+  int width = type.getIntOrFloatBitWidth();
+  TF_RET_CHECK(width % 8 == 0);
+  return width / 8;
+}
+
 mlir::DenseIntElementsAttr CreateDenseIntElementsAttrFromVector(
-    const llvm::ArrayRef<int64> vector, mlir::Builder builder,
+    const llvm::ArrayRef<int64_t> vector, mlir::Builder builder,
     llvm::ArrayRef<int64_t> shape) {
   return mlir::DenseIntElementsAttr::get(
       mlir::RankedTensorType::get(shape.empty() ? vector.size() : shape,
@@ -178,27 +265,15 @@ StatusOr<mlir::Type> ConvertPrimitiveTypeToMLIRType(PrimitiveType element_type,
   }
 }
 
-mlir::mhlo::GatherDimensionNumbers CreateGatherDimensionNumbers(
+mlir::mhlo::GatherDimensionNumbersAttr CreateGatherDimensionNumbers(
     const GatherDimensionNumbers& input, mlir::Builder builder) {
-  auto offset_dims = CreateDenseIntElementsAttrFromVector(
-      llvm::SmallVector<int64, 4>{input.offset_dims().begin(),
-                                  input.offset_dims().end()},
-      builder);
-  auto collapsed_slice_dims = CreateDenseIntElementsAttrFromVector(
-      llvm::SmallVector<int64, 4>{input.collapsed_slice_dims().begin(),
-                                  input.collapsed_slice_dims().end()},
-      builder);
-  auto start_index_map = CreateDenseIntElementsAttrFromVector(
-      llvm::SmallVector<int64, 4>{input.start_index_map().begin(),
-                                  input.start_index_map().end()},
-      builder);
-
-  mlir::IntegerAttr index_vector_dim =
-      builder.getI64IntegerAttr(input.index_vector_dim());
-
-  return mlir::mhlo::GatherDimensionNumbers::get(
-      offset_dims, collapsed_slice_dims, start_index_map, index_vector_dim,
-      builder.getContext());
+  auto get_i64_array = [](absl::Span<const int64_t> container) {
+    return llvm::ArrayRef<int64_t>{container.data(), container.size()};
+  };
+  return mlir::mhlo::GatherDimensionNumbersAttr::get(
+      builder.getContext(), get_i64_array(input.offset_dims()),
+      get_i64_array(input.collapsed_slice_dims()),
+      get_i64_array(input.start_index_map()), input.index_vector_dim());
 }
 
 StatusOr<::xla::HloOpcode> MhloToHloOpcode(mlir::Operation* op) {
@@ -238,9 +313,9 @@ StatusOr<::xla::HloOpcode> MhloToHloOpcode(mlir::Operation* op) {
     return xla::HloOpcode::kSubtract;
   } else if (isa<mlir::mhlo::XorOp, mlir::lmhlo::XorOp>(op)) {
     return xla::HloOpcode::kXor;
-  } else if (isa<mlir::mhlo::InfeedOp, mlir::lmhlo::Infeed>(op)) {
+  } else if (isa<mlir::mhlo::InfeedOp, mlir::lmhlo::InfeedOp>(op)) {
     return xla::HloOpcode::kInfeed;
-  } else if (isa<mlir::mhlo::OutfeedOp, mlir::lmhlo::Outfeed>(op)) {
+  } else if (isa<mlir::mhlo::OutfeedOp, mlir::lmhlo::OutfeedOp>(op)) {
     return xla::HloOpcode::kOutfeed;
   } else if (isa<mlir::mhlo::SendOp>(op)) {
     return xla::HloOpcode::kSend;
@@ -282,13 +357,15 @@ StatusOr<::xla::HloOpcode> MhloToHloOpcode(mlir::Operation* op) {
     return xla::HloOpcode::kSort;
   } else if (isa<mlir::mhlo::RngBitGeneratorOp>(op)) {
     return xla::HloOpcode::kRngBitGenerator;
+  } else if (isa<mlir::mhlo::XlaRngGetAndUpdateStateOp>(op)) {
+    return xla::HloOpcode::kRngGetAndUpdateState;
   } else if (isa<mlir::mhlo::FusionOp, mlir::lmhlo::FusionOp>(op)) {
     return xla::HloOpcode::kFusion;
-  } else if (isa<mlir::mhlo::BitcastOp, mlir::lmhlo::BitcastOp>(op)) {
+  } else if (isa<mlir::mhlo::BitcastOp>(op)) {
     return xla::HloOpcode::kBitcast;
   } else if (isa<mlir::mhlo::AbsOp, mlir::lmhlo::AbsOp>(op)) {
     return xla::HloOpcode::kAbs;
-  } else if (isa<mlir::mhlo::CbrtOp>(op)) {
+  } else if (isa<mlir::mhlo::CbrtOp, mlir::lmhlo::CbrtOp>(op)) {
     return xla::HloOpcode::kCbrt;
   } else if (isa<mlir::mhlo::CeilOp, mlir::lmhlo::CeilOp>(op)) {
     return xla::HloOpcode::kCeil;
@@ -349,7 +426,7 @@ StatusOr<::xla::HloOpcode> MhloToHloOpcode(mlir::Operation* op) {
     return xla::HloOpcode::kCompare;
   } else if (isa<mlir::mhlo::SliceOp, mlir::lmhlo::SliceOp>(op)) {
     return xla::HloOpcode::kSlice;
-  } else if (isa<mlir::mhlo::DynamicSliceOp>(op)) {
+  } else if (isa<mlir::mhlo::DynamicSliceOp, mlir::lmhlo::DynamicSliceOp>(op)) {
     return xla::HloOpcode::kDynamicSlice;
   } else if (isa<mlir::mhlo::DynamicUpdateSliceOp,
                  mlir::lmhlo::DynamicUpdateSliceOp>(op)) {

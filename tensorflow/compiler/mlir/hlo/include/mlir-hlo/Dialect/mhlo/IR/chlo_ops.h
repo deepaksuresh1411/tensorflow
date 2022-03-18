@@ -13,19 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_DIALECT_MHLO_IR_CHLO_OPS_H_
-#define TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_DIALECT_MHLO_IR_CHLO_OPS_H_
+#ifndef MLIR_HLO_DIALECT_MHLO_IR_CHLO_OPS_H
+#define MLIR_HLO_DIALECT_MHLO_IR_CHLO_OPS_H
 
 #include "llvm/ADT/StringRef.h"
-#include "mlir-hlo/Dialect/mhlo/IR/infer_fusibility_op_interface.h"
+#include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mlir-hlo/Dialect/mhlo/IR/infer_shape_equality_op_interface.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/StandardTypes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -36,14 +38,28 @@ class HloClientDialect : public Dialect {
   void initialize();
 
  public:
-  explicit HloClientDialect(MLIRContext *context)
+  explicit HloClientDialect(MLIRContext* context)
       : Dialect(getDialectNamespace(), context,
                 TypeID::get<HloClientDialect>()) {
     initialize();
   }
+  Operation* materializeConstant(OpBuilder& builder, Attribute value, Type type,
+                                 Location loc) override;
   static StringRef getDialectNamespace() { return "chlo"; }
 };
 
+}  // namespace chlo
+}  // namespace mlir
+
+namespace mlir {
+namespace chlo {
+namespace OpTrait {
+
+template <typename ConcreteType>
+class Broadcasting
+    : public mlir::OpTrait::TraitBase<ConcreteType, Broadcasting> {};
+
+}  // namespace OpTrait
 }  // namespace chlo
 }  // namespace mlir
 
@@ -66,7 +82,17 @@ static Value getConstantLike(OpBuilder& b, Location loc, T constant,
   return b.create<ConstantLikeOp>(loc, getAttr(), val);
 }
 
+Value getConstantLike(OpBuilder& b, Location loc, const APFloat& constant,
+                      Value val);
+
+Value getConstantLikeMaxFiniteValue(OpBuilder& b, Location loc, Value val);
+
+Value getConstantLikeInfValue(OpBuilder& b, Location loc, Value val,
+                              bool negative);
+
+Value getConstantLikeSmallestFiniteValue(OpBuilder& b, Location loc, Value val);
+
 }  // namespace chlo
 }  // namespace mlir
 
-#endif  // TENSORFLOW_COMPILER_MLIR_HLO_INCLUDE_MLIR_HLO_DIALECT_MHLO_IR_CHLO_OPS_H_
+#endif  // MLIR_HLO_DIALECT_MHLO_IR_CHLO_OPS_H

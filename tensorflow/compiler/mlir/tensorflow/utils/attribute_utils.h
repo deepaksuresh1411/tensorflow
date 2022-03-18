@@ -22,17 +22,21 @@ limitations under the License.
 namespace mlir {
 namespace TF {
 
+constexpr llvm::StringRef kCompileDeviceTypeAttr = "_xla_compile_device_type";
+constexpr llvm::StringRef kReplicationInfoAttr = "_replication_info";
+constexpr llvm::StringRef kTPUReplicateAttr = "_tpu_replicate";
+
 // Copies attributes that satisfy the given predicate from `from` to `to`.
 template <typename Predicate>
 void CopyAttributes(Operation *from, Operation *to, Predicate P) {
   for (const NamedAttribute &attr : from->getAttrs())
-    if (P(attr)) to->setAttr(attr.first, attr.second);
+    if (P(attr)) to->setAttr(attr.getName(), attr.getValue());
 }
 
 // Copies attributes whose name begins with an _ from `from` to `to`.
 inline void CopyUnderscoredAttributes(Operation *from, Operation *to) {
   CopyAttributes(from, to, [](const NamedAttribute &attr) {
-    return attr.first.strref().front() == '_';
+    return attr.getName().strref().front() == '_';
   });
 }
 
@@ -41,11 +45,30 @@ inline void CopyUnderscoredAttributes(Operation *from, Operation *to) {
 // TODO(b/158769932): This should be a general feature instead post some policy
 // discussion.
 inline void CopyDeviceAndUnderscoredAttributes(Operation *from, Operation *to) {
-  auto device = mlir::Identifier::get("device", from->getContext());
+  auto device = mlir::StringAttr::get(from->getContext(), "device");
   CopyAttributes(from, to, [&device](const NamedAttribute &attr) {
-    return attr.first.strref().front() == '_' || attr.first == device;
+    return attr.getName().strref().front() == '_' || attr.getName() == device;
   });
 }
+
+// Forward declare these passthrough ops.
+// TODO(jpienaar): Remove these and use trait instead.
+class IdentityOp;
+class IdentityNOp;
+
+// Returns if a value corresponds to a constant, returns the matched constant
+// as an attribute.
+template <typename AttrT>
+bool GetValueAsConstant(Value val, AttrT &attr) {
+  while (auto result = val.dyn_cast<OpResult>()) {
+    Operation *op = result.getOwner();
+    if (!isa<IdentityOp>(op) && !isa<IdentityNOp>(op)) break;
+    val = op->getOperand(result.getResultNumber());
+  }
+  return matchPattern(val, m_Constant(&attr));
+}
+
+LogicalResult HasValidCompilationAndReplicationAttributes(Operation &op);
 
 }  // namespace TF
 }  // namespace mlir

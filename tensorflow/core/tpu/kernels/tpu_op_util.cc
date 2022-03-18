@@ -17,7 +17,10 @@ limitations under the License.
 #include <cstdint>
 #include <string>
 
+#include "absl/strings/str_cat.h"
+#include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
+#include "tensorflow/core/tpu/tpu_compile_interface.h"
 #include "tensorflow/core/tpu/tpu_ops_c_api.h"
 
 namespace tensorflow {
@@ -27,7 +30,7 @@ std::string CreateShapePrefix(
     const std::vector<tensorflow::TensorShape>& dynamic_shapes) {
   std::string shapes_prefix;
   for (const TensorShape& shape : dynamic_shapes) {
-    for (int64 size : shape.dim_sizes()) {
+    for (int64_t size : shape.dim_sizes()) {
       absl::StrAppend(&shapes_prefix, size, ",");
     }
     absl::StrAppend(&shapes_prefix, ";");
@@ -69,6 +72,15 @@ std::string CreateConfigPrefix(const TPUCompileMetadataProto& metadata) {
 }
 }  // namespace
 
+uint64 CreateFingerprintWithNameAndShapes(
+    uint64 name, const std::vector<tensorflow::TensorShape>& shapes) {
+  std::string shape_prefix = CreateShapePrefix(shapes);
+  VLOG(2) << "CreateFingerprintWithNameAndShapes, name: " << name
+          << ", shape_prefix: " << shape_prefix;
+  return TpuCompileInterface::Get()->FingerprintString(
+      absl::StrCat(name, "_", shape_prefix));
+}
+
 // Return fingerprint_in_metadata if it's not empty; otherwise read input tensor
 // data to compute the fingerprint.
 std::string GuaranteedConstFingerprint(
@@ -95,7 +107,8 @@ TpuCompilationCacheKey CreateCompilationCacheKey(
     uint64 mlir_module_fingerprint, const OpInputList& guaranteed_constants,
     const std::vector<TensorShape>& dynamic_shapes,
     const TPUCompileMetadataProto& metadata,
-    const TpuMeshStateInterface& mesh_state) {
+    const TpuMeshStateInterface& mesh_state, uint64_t session_id,
+    ResourceMgr* resource_mgr) {
   VLOG(1) << "FunctionLibraryFingerprint:" << function_library_fingerprint;
   std::string shapes_prefix = CreateShapePrefix(dynamic_shapes);
   VLOG(1) << "shapes_prefix = " << shapes_prefix;
@@ -113,24 +126,19 @@ TpuCompilationCacheKey CreateCompilationCacheKey(
   CompilationCacheKeyResult result =
       tpu::OpsApiFn()->TpuCompile_CreateCompilationCacheKeyFn(
           CompilationCacheKeyProperty{
-              config_prefix.data(),
-              shapes_prefix.data(),
-              function_name.data(),
-              mlir_module_fingerprint,
-              flattened_device_ids.data(),
-              flattened_device_ids.size(),
-              guaranteed_constants.size(),
-              function_library_fingerprint,
-              metadata.num_cores_per_replica(),
-              metadata.num_replicas(),
-              mesh_state.data(),
-          });
+              config_prefix.data(), shapes_prefix.data(), function_name.data(),
+              mlir_module_fingerprint, flattened_device_ids.data(),
+              flattened_device_ids.size(), guaranteed_constants.size(),
+              function_library_fingerprint, metadata.num_cores_per_replica(),
+              metadata.num_replicas(), mesh_state.data(), session_id,
+              resource_mgr});
   auto buffer_cleanup = gtl::MakeCleanup([result]() {
     tpu::OpsApiFn()->TpuCompile_DestroyCompilationCacheKeyFn(result);
   });
   TpuCompilationCacheKey key;
   key.prefix = result.key;
   key.debug_string = result.debug_string;
+  key.session_id = session_id;
 
   // Guaranteed constants can be different across sessions. Use session_handle
   // and guaranteed_const fingerprint to guarantee no collision.

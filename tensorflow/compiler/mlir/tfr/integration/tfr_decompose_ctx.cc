@@ -23,18 +23,18 @@ limitations under the License.
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/SourceMgr.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/SCF/SCF.h"  // from @llvm-project
 #include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
-#include "mlir/IR/Identifier.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/IR/Verifier.h"  // from @llvm-project
-#include "mlir/Parser.h"  // from @llvm-project
+#include "mlir/Parser/Parser.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
@@ -92,9 +92,10 @@ std::unique_ptr<TFRDecomposeContext> TFRDecomposeContext::GetFromText(
     StringPiece tfr_raw_text, mlir::MLIRContext* mlir_ctx) {
   mlir_ctx->allowUnregisteredDialects(/*allow=*/true);
   // Load dialects involved in the conversion
-  mlir::DialectRegistry& registry = mlir_ctx->getDialectRegistry();
+  mlir::DialectRegistry registry;
   // clang-format off
-  registry.insert<mlir::StandardOpsDialect,
+  registry.insert<mlir::arith::ArithmeticDialect,
+                  mlir::func::FuncDialect,
                   mlir::scf::SCFDialect,
                   mlir::shape::ShapeDialect,
                   mlir::TF::TensorFlowDialect,
@@ -102,14 +103,16 @@ std::unique_ptr<TFRDecomposeContext> TFRDecomposeContext::GetFromText(
                   mlir::tf_executor::TensorFlowExecutorDialect,
                   mlir::TFR::TFRDialect>();
   // clang-format on
-  registry.loadAll(mlir_ctx);
+  mlir_ctx->appendDialectRegistry(registry);
+  mlir_ctx->loadAllAvailableDialects();
 
   // Load the TFR functions in a mlir::ModuleOp
   auto memory_buffer = llvm::MemoryBuffer::getMemBuffer(
       llvm::StringRef(tfr_raw_text.data(), tfr_raw_text.size()));
   llvm::SourceMgr source_mgr;
   source_mgr.AddNewSourceBuffer(std::move(memory_buffer), llvm::SMLoc());
-  mlir::OwningModuleRef module = mlir::parseSourceFile(source_mgr, mlir_ctx);
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceFile<mlir::ModuleOp>(source_mgr, mlir_ctx);
   // The MLIRContext owns the module
   auto module_op = module.release();
 
@@ -144,13 +147,13 @@ StatusOr<FunctionDef> TFRDecomposeContext::ExpandNode(const NodeDef& node_def,
   for (const auto& attr : node_def.attr()) {
     TF_ASSIGN_OR_RETURN(auto mlir_attr,
                         ConvertAttributeValue(attr.second, &builder));
-    attrs.push_back({mlir::Identifier::get(attr.first, context), mlir_attr});
+    attrs.push_back({mlir::StringAttr::get(context, attr.first), mlir_attr});
   }
 
   mlir::Location loc = mlir::UnknownLoc::get(context);
   mlir::ModuleOp module = mlir::ModuleOp::create(loc);
   mlir::FunctionType func_type =
-      mlir::FunctionType::get(input_tys, output_tys, context);
+      mlir::FunctionType::get(context, input_tys, output_tys);
   llvm::StringRef func_name_str(func_name.data(), func_name.size());
   auto func = mlir::FuncOp::create(loc, func_name_str, func_type, {});
   module.push_back(func);
@@ -164,7 +167,7 @@ StatusOr<FunctionDef> TFRDecomposeContext::ExpandNode(const NodeDef& node_def,
   op_state.addTypes(output_tys);
   op_state.addAttributes(attrs);
   mlir::Operation* tf_op = op_builder.createOperation(op_state);
-  op_builder.create<mlir::ReturnOp>(loc, tf_op->getResults());
+  op_builder.create<mlir::func::ReturnOp>(loc, tf_op->getResults());
 
   // Run the decompose passes on the module
   TF_RETURN_IF_ERROR(DecomposeGraph(module));

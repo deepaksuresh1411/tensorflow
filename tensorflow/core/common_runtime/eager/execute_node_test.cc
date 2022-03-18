@@ -38,6 +38,10 @@ class TestKernelAndDeviceFunc final : public KernelAndDeviceFunc {
             /*composite_devices=*/{}, /*input_resource_dtypes_and_shapes=*/{},
             /*runner=*/nullptr, /*collective_executor=*/nullptr,
             host_cpu_device, /*name=*/"", /*outputs_on_op_device=*/false,
+            /*allow_small_function_optimizations=*/false,
+            /*allow_control_flow_sync_execution=*/false,
+            /*shape_inference_on_tfe_dialect_import=*/true,
+            /*int_args_and_retvals_on_device=*/false,
             /*rendezvous_creator=*/nullptr, /*get_op_id=*/nullptr),
         test_input_devices_(std::move(input_devices)) {}
 
@@ -68,7 +72,7 @@ TEST(ExecuteNodeTest, ExecuteNodeArgs) {
   auto ctx = new EagerContext(
       SessionOptions(),
       tensorflow::ContextDevicePlacementPolicy::DEVICE_PLACEMENT_SILENT, false,
-      false, &device_mgr, false, nullptr, nullptr);
+      &device_mgr, false, nullptr, nullptr);
 
   // Set a RemoteMgr to the EagerContext.
   auto remote_mgr = absl::make_unique<eager::RemoteMgr>(
@@ -105,7 +109,7 @@ TEST(ExecuteNodeTest, ExecuteNodeArgs) {
 
   std::vector<Device*> input_devices;
   for (auto* h : inputs) {
-    input_devices.push_back(absl::get<Device*>(h->DeviceOrHostCPU(*ctx)));
+    input_devices.push_back(h->DeviceOrHostCPU(*ctx));
   }
   const core::RefCountPtr<KernelAndDevice> kernel(
       new TestKernelAndDeviceFunc(std::move(input_devices), device0));

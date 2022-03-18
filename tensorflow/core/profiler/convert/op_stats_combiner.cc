@@ -56,8 +56,6 @@ void CombinePerCoreStepInfo(
     hlo_metrics_db_complete_steps_only_combiner->Combine(src.hlo_metrics_db());
   }
   hlo_metrics_db_per_step_combiner->Combine(src.hlo_metrics_db());
-  CombineCoreIdMap(src_host_id, src.flow_db_per_core(),
-                   dst->mutable_flow_db_per_core());
   CombineCoreIdMap(src_host_id, src.all_reduce_db_per_core(),
                    dst->mutable_all_reduce_db_per_core());
   CombineCoreIdMap(src_host_id, src.core_id_to_replica_id_map(),
@@ -217,6 +215,8 @@ void CombineAllOpStats(const std::vector<OpStatsInfo>& all_op_stats_info,
   }
   // Record the number of steps that are dropped.
   combined_step_db->set_num_steps_dropped(step_intersection.StepsDropped());
+
+  combined_step_db->set_empty_intersect(step_intersection.EmptyIntersect());
 
   // Set the default value of per_core_batch_size in <combined_op_stats>
   combined_op_stats->mutable_run_environment()->set_per_core_batch_size(-1);

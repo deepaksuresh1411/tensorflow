@@ -19,11 +19,15 @@ limitations under the License.
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cmath>
+
 #include "tensorflow/c/tf_attrtype.h"
-#include "tensorflow/c/tf_status.h"
 #include "tensorflow/core/tpu/libtftpu.h"
 
 extern "C" {
+
+struct TF_Status;
+typedef struct TF_Status TF_Status;
 
 // Maximum number of array elements to inline into structs for performance.
 #define TPU_C_API_MAX_INLINED 6
@@ -40,6 +44,13 @@ enum TpuVersionEnum {
   kTpuV3,
   kTpuV4,
 };
+
+typedef struct TpuRuntimeVersion {
+  // The three version numbers are: major, minor, patch
+  int version[3];
+  const char* metadata;
+  size_t metadata_size;
+} TpuRuntimeVersion;
 
 typedef struct SE_Platform SE_Platform;
 typedef struct SE_StreamExecutor SE_StreamExecutor;
@@ -140,6 +151,7 @@ typedef struct SE_DeviceDescription {
   int cuda_compute_capability_minor;
 
   int rocm_amdgpu_isa_version;
+  char* rocm_amdgpu_gcn_arch_name;
 
   int numa_node;
   int core_count;
@@ -160,6 +172,9 @@ typedef struct SE_ExecutableRunOptions {
   int launch_id;
 } SE_ExecutableRunOptions;
 
+typedef struct SE_ExecutableSerializationHandle
+    SE_ExecutableSerializationHandle;
+
 typedef struct SE_MaybeOwningDeviceMemory {
   SE_DeviceMemoryBase memory;
   bool owned;
@@ -177,6 +192,14 @@ struct Int64List {
   int64_t size;
 };
 
+struct FloatList {
+  union {
+    float_t* heap;  // owned
+    float_t inlined[TPU_C_API_MAX_INLINED];
+  };
+  int64_t size;
+};
+
 struct BoolList {
   union {
     bool* heap;  // owned
@@ -184,6 +207,16 @@ struct BoolList {
   };
   int64_t size;
 };
+
+struct FloatListRef {
+  float_t* ptr;  // not owned
+  int64_t size;
+};
+
+typedef struct TpuEmbeddingEngineParameters {
+  FloatListRef** parameters[8];
+  size_t num_tables;
+} TpuEmbeddingEngineParameters;
 
 typedef struct XLA_Tile {
   Int64List dimensions;
@@ -269,6 +302,8 @@ typedef struct XLA_HloModuleConfig {
   int64_t replica_count;
   int64_t num_partitions;
   bool use_spmd_partitioning;
+  bool use_auto_spmd_partitioning;
+  TpuSerializedProto debug_options;
   bool has_static_device_assignment;
   TpuSerializedProto static_device_assignment;
   bool has_entry_computation_layout;

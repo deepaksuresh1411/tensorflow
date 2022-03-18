@@ -88,6 +88,9 @@ void TpuProgramGroup::Initialize(
                                   "`TpuProgramGroup` instance is prohibited.";
   set_tpu_programs(xla_tpu_programs);
 
+  CHECK_EQ(tpu_program_fingerprints_.size(), 0);
+  set_fingerprints();
+
   std::vector<bool> may_modify_variables_array(tpu_programs_.size(), false);
   std::vector<TPUExecutableInfoProto> executable_infos(tpu_programs_.size());
   std::vector<TPUHostTransferInfoProto> host_transfer_infos(
@@ -185,13 +188,6 @@ void TpuProgramGroup::RefreshHloMetadatasPtrs() {
   }
 }
 
-Status TpuProgramGroup::LogCompilationStats(const TpuCompilationCacheKey& key,
-                                            absl::Duration duration) {
-  // A placeholder for tracking compilation statistics for future work. The
-  // implementation can be pushing into some external storage for analytics.
-  return Status::OK();
-}
-
 const std::vector<bool>& TpuProgramGroup::may_modify_variables_list() const {
   return may_modify_variables_;
 }
@@ -212,6 +208,24 @@ bool TpuProgramGroup::may_modify_variables(int index) const {
 
 const std::vector<XLA_TpuProgram*>& TpuProgramGroup::tpu_programs() const {
   return tpu_programs_;
+}
+
+const std::vector<std::string>& TpuProgramGroup::fingerprints() const {
+  return tpu_program_fingerprints_;
+}
+
+void TpuProgramGroup::set_fingerprints() {
+  for (const XLA_TpuProgram* tpu_program : tpu_programs_) {
+    TpuProgramFingerprint fingerprint =
+        OpsApiFn()->TpuProgram_GetFingerprintFn(tpu_program);
+    tpu_program_fingerprints_.emplace_back(
+        std::string(fingerprint.bytes, fingerprint.size));
+    OpsApiFn()->TpuProgram_DestroyFingerprintFn(fingerprint);
+  }
+}
+
+const std::string& TpuProgramGroup::fingerprint(int index) const {
+  return fingerprints().at(index);
 }
 
 const XLA_TpuProgram* TpuProgramGroup::tpu_program(int index) const {

@@ -18,18 +18,23 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/str_cat.h"
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "flatbuffers/flexbuffers.h"  // from @flatbuffers
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/ADT/Twine.h"
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
+#include "tensorflow/compiler/mlir/lite/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/lite/kernels/internal/kernel_utils.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/schema/schema_utils.h"
 
 namespace {
 
@@ -55,6 +60,23 @@ StatusOr<mlir::StringAttr> GetPaddingAttr(TfLitePadding pad_params,
 }
 
 }  // namespace
+
+std::string mlir::GetMlirOpNameFromOpCode(
+    const tflite::OperatorCodeT& op_code) {
+  auto builtin_code = tflite::GetBuiltinCode(&op_code);
+  if (builtin_code == tflite::BuiltinOperator_CUSTOM) {
+    return std::string("tfl.custom");
+  }
+  if (builtin_code == tflite::BuiltinOperator_IF) {
+    return std::string("tf.If");
+  }
+  if (builtin_code == tflite::BuiltinOperator_WHILE) {
+    return std::string("tfl.while");
+  }
+
+  llvm::StringRef op_name(tflite::EnumNameBuiltinOperator(builtin_code));
+  return llvm::Twine("tfl.", op_name.lower()).str();
+}
 
 // TODO(jpienaar): This is a placeholder. This should be done in more efficient
 // way when part of the translation of module.
@@ -95,39 +117,18 @@ static tflite::MirrorPadMode ConvertTFL_MirrorPaddingAttrForOptionWriter(
 
 static tflite::TensorType ConvertDerivedTypeAttrForOptionWriter(
     mlir::Type type, flatbuffers::FlatBufferBuilder* builder) {
-  if (type.isF16()) {
-    return tflite::TensorType_FLOAT16;
-  } else if (type.isF32()) {
-    return tflite::TensorType_FLOAT32;
-  } else if (type.isa<mlir::TF::StringType>()) {
-    return tflite::TensorType_STRING;
-  } else if (auto complex_type = type.dyn_cast<mlir::ComplexType>()) {
-    if (complex_type.getElementType().isF32()) {
-      return tflite::TensorType_COMPLEX64;
-    }
-    llvm_unreachable("invalid complex Type in conversion");
-  } else if (auto itype = type.dyn_cast<mlir::IntegerType>()) {
-    switch (itype.getWidth()) {
-      case 1:
-        return tflite::TensorType_BOOL;
-      case 8:
-        return tflite::TensorType_INT8;
-      case 16:
-        return tflite::TensorType_INT16;
-      case 32:
-        return tflite::TensorType_INT32;
-      case 64:
-        return tflite::TensorType_INT64;
-      default:
-        llvm_unreachable("invalid integer Type in conversion");
-    }
-  }
-  llvm_unreachable("invalid Type in conversion");
+  return tflite::ConvertTypeToTensorType(type);
 }
 
 // I32Attr already returns an int as required by flatbuffer builders.
 static int ConvertI32AttrForOptionWriter(
     int i, flatbuffers::FlatBufferBuilder* builder) {
+  return i;
+}
+
+// I64Attr already returns a int64_t as required by flatbuffer builders.
+static int64_t ConvertI64AttrForOptionWriter(
+    int64_t i, flatbuffers::FlatBufferBuilder* builder) {
   return i;
 }
 
@@ -147,6 +148,18 @@ ConvertI64ArrayAttrForOptionWriter(mlir::ArrayAttr attrArray,
   return builder->CreateVector(intVec);
 }
 
+static flatbuffers::Offset<flatbuffers::Vector<float>>
+ConvertF32ArrayAttrForOptionWriter(mlir::ArrayAttr attrArray,
+                                   flatbuffers::FlatBufferBuilder* builder) {
+  std::vector<float> floatVec;
+  floatVec.reserve(attrArray.getValue().size());
+  for (auto attr : attrArray.getValue()) {
+    floatVec.push_back(
+        attr.cast<mlir::FloatAttr>().getValue().convertToFloat());
+  }
+  return builder->CreateVector(floatVec);
+}
+
 // F32Attr already returns a float as required by flatbuffer builders.
 static float ConvertF32AttrForOptionWriter(
     llvm::APFloat f, flatbuffers::FlatBufferBuilder* builder) {
@@ -157,6 +170,23 @@ static float ConvertF32AttrForOptionWriter(
 static bool ConvertBoolAttrForOptionWriter(
     bool b, flatbuffers::FlatBufferBuilder* builder) {
   return b;
+}
+
+// Overloading of ConvertBoolAttrForOptionWriter which takes Optional<bool> as
+// an input. If value is not specified, false is set for the attribute.
+static bool ConvertBoolAttrForOptionWriter(
+    mlir::Optional<bool> b, flatbuffers::FlatBufferBuilder* builder) {
+  return b.hasValue() ? b.getValue() : false;
+}
+
+static flatbuffers::Offset<flatbuffers::String> ConvertStrAttrForOptionWriter(
+    llvm::StringRef str, flatbuffers::FlatBufferBuilder* builder) {
+  return builder->CreateString(str.str());
+}
+
+static tflite::TensorType ConvertTypeAttrForOptionWriter(
+    mlir::Type type, flatbuffers::FlatBufferBuilder* builder) {
+  return tflite::ConvertTypeToTensorType(type);
 }
 
 static flatbuffers::Offset<flatbuffers::Vector<int32_t>>
@@ -186,6 +216,11 @@ static mlir::Attribute BuildBoolAttr(bool value, mlir::Builder builder) {
   return builder.getBoolAttr(value);
 }
 
+static mlir::Attribute BuildStrAttr(llvm::StringRef str,
+                                    mlir::Builder builder) {
+  return builder.getStringAttr(str);
+}
+
 static mlir::Attribute BuildF32Attr(float value, mlir::Builder builder) {
   return builder.getF32FloatAttr(value);
 }
@@ -194,15 +229,30 @@ static mlir::Attribute BuildI32Attr(int32_t value, mlir::Builder builder) {
   return builder.getI32IntegerAttr(value);
 }
 
+static mlir::Attribute BuildI64Attr(int64_t value, mlir::Builder builder) {
+  return builder.getI64IntegerAttr(value);
+}
+
 static mlir::Attribute BuildI64ArrayAttr(std::vector<int32_t> value,
                                          mlir::Builder builder) {
   std::vector<int64_t> typecast(value.begin(), value.end());
   return builder.getI64ArrayAttr(typecast);
 }
 
+static mlir::Attribute BuildF32ArrayAttr(std::vector<float> value,
+                                         mlir::Builder builder) {
+  std::vector<float> typecast(value.begin(), value.end());
+  return builder.getF32ArrayAttr(typecast);
+}
+
 static mlir::Attribute BuildPositiveI32Attr(int32_t value,
                                             mlir::Builder builder) {
   return builder.getI32IntegerAttr(value);
+}
+
+static mlir::Attribute BuildTypeAttr(tflite::TensorType value,
+                                     mlir::Builder builder) {
+  return mlir::TypeAttr::get(ConvertElementType(value, builder));
 }
 
 static mlir::Attribute BuildTFL_AFAttr(tflite::ActivationFunctionType value,

@@ -157,8 +157,19 @@ class RaggedTensorToVariantOp : public OpKernel {
       return;
     }
 
+    // Checked here instead of at input in case batched_input_ is false
+    OP_REQUIRES(context, ragged_nested_splits_len > 0,
+                errors::InvalidArgument(
+                    "rt_nested_splits must be a list of one or more, but "
+                    "received rt_nested_splits of length 0."));
+
     // Unbatch the Ragged Tensor and encode the components.
     std::vector<RaggedTensorVariant> unbatched_ragged_input;
+    auto batched_splits_top_vec =
+        batched_ragged_input.splits(0).vec<SPLIT_TYPE>();
+    int num_components = batched_splits_top_vec.size() - 1;
+    OP_REQUIRES(context, num_components >= 0,
+                errors::Internal("Invalid split argument."));
     OP_REQUIRES_OK(context, UnbatchRaggedZerothDim<VALUE_TYPE, SPLIT_TYPE>(
                                 batched_ragged_input, &unbatched_ragged_input));
 
@@ -211,8 +222,7 @@ class RaggedTensorToVariantGradientOp : public OpKernel {
         TensorShape zeros_shape = dense_values_shape;
         zeros_shape.set_dim(0, piece_size);
         Tensor zero(value_dtype, zeros_shape);
-        zero.flat<VALUE_TYPE>() =
-            zero.flat<VALUE_TYPE>().constant(VALUE_TYPE());
+        zero.flat<VALUE_TYPE>().setZero();
         values.push_back(zero);
       }
     }
@@ -221,18 +231,22 @@ class RaggedTensorToVariantGradientOp : public OpKernel {
       // Just one flat_value tensor: return as-is.
       context->set_output(0, values[0]);
     } else {
+      Tensor* out = nullptr;
+      OP_REQUIRES_OK(context,
+                     context->allocate_output(0, dense_values_shape, &out));
+      // ConcatCPU assumes non-empty output.
+      if (dense_values_shape.num_elements() == 0) return;
       // Multiple flat_values tensors: concatenate them together.
       using Piece = typename TTypes<VALUE_TYPE, 2>::Matrix;
       using ConstPiece = typename TTypes<VALUE_TYPE, 2>::ConstMatrix;
       std::vector<std::unique_ptr<ConstPiece>> pieces;
       pieces.reserve(values.size());
       for (const Tensor& t : values) {
+        // ConcatCPU assumes non-empty inputs.
+        if (t.NumElements() == 0) continue;
         pieces.emplace_back(
             new ConstPiece(t.shaped<VALUE_TYPE, 2>({1, t.NumElements()})));
       }
-      Tensor* out = nullptr;
-      OP_REQUIRES_OK(context,
-                     context->allocate_output(0, dense_values_shape, &out));
       Piece out_flat =
           out->shaped<VALUE_TYPE, 2>({1, dense_values_shape.num_elements()});
       ConcatCPU<VALUE_TYPE>(context->device(), pieces, &out_flat);
@@ -255,7 +269,7 @@ class RaggedTensorToVariantGradientOp : public OpKernel {
 
 #define REGISTER_KERNELS(value_type)                  \
   REGISTER_KERNELS_WITH_SPLIT_TYPE(value_type, int32) \
-  REGISTER_KERNELS_WITH_SPLIT_TYPE(value_type, int64)
+  REGISTER_KERNELS_WITH_SPLIT_TYPE(value_type, int64_t)
 TF_CALL_POD_TYPES(REGISTER_KERNELS);
 TF_CALL_tstring(REGISTER_KERNELS);
 TF_CALL_QUANTIZED_TYPES(REGISTER_KERNELS);

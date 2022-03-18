@@ -14,17 +14,13 @@
 # ==============================================================================
 """Tests for remote execution."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import random
 import time
 
 from absl.testing import parameterized
 import numpy as np
-import six
+import portpicker
 
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.distribute.cluster_resolver.cluster_resolver import SimpleClusterResolver
@@ -38,6 +34,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_spec
+from tensorflow.python.framework import test_ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
@@ -45,9 +42,11 @@ from tensorflow.python.ops import data_flow_ops
 from tensorflow.python.ops import functional_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import resource_variable_ops
+from tensorflow.python.ops import string_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.training import server_lib
 from tensorflow.python.training.server_lib import ClusterSpec
+from tensorflow.python.util import compat
 
 
 class SingleWorkerTest(test.TestCase, parameterized.TestCase):
@@ -66,7 +65,6 @@ class SingleWorkerTest(test.TestCase, parameterized.TestCase):
     # Reset the context to avoid polluting other test cases.
     context._reset_context()
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testMultiDeviceFunctionBasic(self):
 
     @def_function.function
@@ -81,10 +79,13 @@ class SingleWorkerTest(test.TestCase, parameterized.TestCase):
     self.assertAllEqual(basic(constant_op.constant([2])).numpy(), [5])
     self.assertAllEqual(basic(constant_op.constant([1])).numpy(), [4])
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testMultiDeviceFunctionVariable(self):
     with ops.device('/job:worker/replica:0/task:0/cpu:0'):
       variable_b = variables.Variable(1)
+
+    # Add a sync point to avoid the out-of-order issue of eager async execution
+    # (b/155789951).
+    context.async_wait()
 
     @def_function.function
     def with_variable(i):
@@ -103,26 +104,12 @@ class SingleWorkerTest(test.TestCase, parameterized.TestCase):
       return i + variable_b, c
 
     rets = remote_output(constant_op.constant([1]))
+    self.assertAllEqual(rets[0].numpy(), [2])
+    self.assertAllEqual(rets[1].numpy(), 2)
     self.assertEqual(rets[0].backing_device,
                      '/job:localhost/replica:0/task:0/device:CPU:0')
     self.assertEqual(rets[1].backing_device,
                      '/job:worker/replica:0/task:0/device:CPU:0')
-    self.assertAllEqual(rets[0].numpy(), [2])
-    self.assertAllEqual(rets[1].numpy(), 2)
-
-  def testMultiDeviceFunctionAmbiguousDevice(self):
-
-    @def_function.function
-    def ambiguous_device(i):
-      with ops.device('cpu:0'):
-        return i + constant_op.constant([2])
-
-    with self.assertRaises(errors.InvalidArgumentError) as cm:
-      with ops.device('/job:worker/replica:0/task:0/cpu:0'):
-        ambiguous_device(constant_op.constant([2])).numpy()
-
-    self.assertIn('the output node must match exactly one device',
-                  cm.exception.message)
 
   def testStreaming(self):
     """A mini stress test for streaming - issuing many RPCs back to back."""
@@ -148,7 +135,6 @@ class SingleWorkerTest(test.TestCase, parameterized.TestCase):
 
     self.assertIn('Dimensions must be equal', cm.exception.message)
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testShapeError_Function(self):
 
     @def_function.function
@@ -162,10 +148,7 @@ class SingleWorkerTest(test.TestCase, parameterized.TestCase):
       with self.assertRaises(ValueError) as cm:
         matmul_func(x, y)
 
-    if six.PY2:
-      self.assertIn('Dimensions must be equal', cm.exception.message)
-    else:
-      self.assertIn('Dimensions must be equal', cm.exception.args[0])
+    self.assertIn('Dimensions must be equal', cm.exception.args[0])
 
   def testClientVarible(self):
     var = variables.Variable(initial_value=0)
@@ -179,7 +162,6 @@ class SingleWorkerTest(test.TestCase, parameterized.TestCase):
     with ops.device('/job:worker/task:0'):
       self.assertAllEqual(func(), 1)
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testRemoteCall(self):
 
     @def_function.function(
@@ -199,6 +181,24 @@ class SingleWorkerTest(test.TestCase, parameterized.TestCase):
 
     with ops.device('/job:localhost/task:0'):
       self.assertAllEqual(func(constant_op.constant(1)), [2])
+
+  def testOperationTimeout(self):
+    context._reset_context()
+    context.context().operation_timeout_in_ms = 10
+    workers, _ = test_util.create_local_cluster(1, 0)
+    remote.connect_to_remote_host(workers[0].target)
+
+    q = data_flow_ops.FIFOQueue(1, dtypes.int32)
+
+    @def_function.function
+    def f():
+      return q.dequeue()
+
+    with self.assertRaises(errors.DeadlineExceededError):
+      with ops.device('/job:worker/replica:0/task:0'):
+        f()
+      # If streaming RPC is enabled, fetch remote errors before end of execution
+      context.async_wait()
 
 
 class RemoteAsyncTest(test.TestCase):
@@ -306,7 +306,6 @@ class MultiWorkersTest(test.TestCase, parameterized.TestCase):
     # Reset the context to avoid polluting other test cases.
     context._reset_context()
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testReturnRemoteArgument(self):
 
     @def_function.function
@@ -318,6 +317,21 @@ class MultiWorkersTest(test.TestCase, parameterized.TestCase):
 
     with ops.device('/job:worker/replica:0/task:1'):
       self.assertAllEqual(local_func(x), [2, 1])
+
+  def testMultiDeviceFunctionAmbiguousDevice(self):
+
+    @def_function.function
+    def ambiguous_device(i):
+      with ops.device('/job:worker'):
+        # Multiple worker tasks, thus ambiguous device found error will be
+        # raised.
+        return i + constant_op.constant([2])
+
+    with self.assertRaises(errors.InvalidArgumentError) as cm:
+      ambiguous_device(constant_op.constant([2])).numpy()
+
+    self.assertIn('the output node must match exactly one device',
+                  cm.exception.message)
 
   # Note that the following tests for remote function cancellation only works
   # when non-streaming RPC. We need to disable streaming explicitly and restore
@@ -376,7 +390,6 @@ class MultiWorkersTest(test.TestCase, parameterized.TestCase):
     else:
       os.environ[remote_async_env_var] = default_streaming
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testMultiDeviceFunctionOnLocalDevice(self):
     with ops.device('/job:worker/replica:0/task:1'):
       variable_b = variables.Variable(1.0)
@@ -444,7 +457,6 @@ class MultiWorkersTest(test.TestCase, parameterized.TestCase):
     # Run the function on a local worker
     self.assertAllEqual(add_variables().numpy(), 3.0)
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testMultiDeviceFunctionOnRemoteDeviceWithWait(self):
     with ops.device('/job:worker/replica:0/task:1'):
       variable_b = variables.Variable([1.0])
@@ -480,7 +492,6 @@ class MultiWorkersTest(test.TestCase, parameterized.TestCase):
     with ops.device('/job:worker/replica:0/task:2'):
       self.assertAllEqual(remote_function2(constant_op.constant([3.0])), [7.0])
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testMultiDeviceFunctionOnRemoteDevice(self):
     with ops.device('/job:worker/replica:0/task:1'):
       variable_b = variables.Variable(1.0)
@@ -518,7 +529,6 @@ class MultiWorkersTest(test.TestCase, parameterized.TestCase):
     self.assertAllEqual(rets[0].numpy(), [2])
     self.assertAllEqual(rets[1].numpy(), 2)
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testMultiDeviceWhileLoopOnRemoteDevice(self):
     with ops.device('/job:worker/replica:0/task:1'):
       variable_b = variables.Variable(1.0)
@@ -540,7 +550,6 @@ class MultiWorkersTest(test.TestCase, parameterized.TestCase):
       with ops.device('/job:worker/replica:0/task:0/device:GPU:0'):
         self.assertAllEqual(remote_function(constant_op.constant([1.0])), [3.0])
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testSimpleParameterServer(self):
 
     with ops.device('/job:worker/task:2/device:CPU:0'):
@@ -585,7 +594,32 @@ class MultiJobsTest(test.TestCase, parameterized.TestCase):
     # Reset the context to avoid polluting other test cases.
     context._reset_context()
 
-  @test_util.eager_lazy_remote_copy_on_and_off
+  def testMultipleDeviceFoundCheck(self):
+    remote.connect_to_cluster(self._cluster)
+
+    @def_function.function
+    def func():
+      with ops.device('cpu:0'):
+        # Multiple CPU:0 devices match would be found, but the CPU:0 from the
+        # parent device scope should be picked.
+        x = test_ops.device_placement_op()
+        y = string_ops.string_upper(x)
+        packed_var_0 = array_ops.stack([x, y], 0)
+        return packed_var_0
+
+    with ops.device('/job:my_worker/task:1'):
+      output = self.evaluate(func())
+      self.assertEqual(
+          compat.as_bytes('/job:my_worker/replica:0/task:1/device:CPU:0'),
+          output[0])
+      self.assertIn(compat.as_bytes('/JOB:MY_WORKER'), output[1])
+    with ops.device('/job:my_ps/task:1'):
+      output = self.evaluate(func())
+      self.assertEqual(
+          compat.as_bytes('/job:my_ps/replica:0/task:1/device:CPU:0'),
+          output[0])
+      self.assertIn(compat.as_bytes('/JOB:MY_PS'), output[1])
+
   def testSimpleParameterServer(self):
     remote.connect_to_cluster(self._cluster)
 
@@ -605,8 +639,24 @@ class MultiJobsTest(test.TestCase, parameterized.TestCase):
     with ops.device('/job:my_worker/task:1/device:CPU:0'):
       self.assertAllEqual(worker_fn(), 8)
 
+  def testResetClusterWithDifferentJobNames(self):
+    addr = 'localhost:%s' % portpicker.pick_unused_port()
+    cluster = server_lib.ClusterSpec({'localhost': [addr]})
+    remote.connect_to_cluster(cluster, job_name='localhost')
+    with ops.device('/job:localhost/task:0/device:CPU:0'):
+      v1 = variables.Variable(initial_value=0)
+      v1.assign_add(1)
+
+    # Replace job name from 'localhost' to 'worker' in the cluster.
+    addr = 'localhost:%s' % portpicker.pick_unused_port()
+    cluster = server_lib.ClusterSpec({'worker': [addr]})
+    remote.connect_to_cluster(cluster, job_name='worker')
+
+    with ops.device('/job:worker/task:0/device:CPU:0'):
+      v2 = variables.Variable(initial_value=0)
+      v2.assign_add(1)
+
   # TODO(b/152224115): Re-enable this test.
-  @test_util.eager_lazy_remote_copy_on_and_off
   def DISABLED_testSimpleParameterServerWithDeviceFilters(self):
     cluster_device_filters = server_lib.ClusterDeviceFilters()
     for i in range(2):
@@ -653,7 +703,6 @@ class MultiJobsTest(test.TestCase, parameterized.TestCase):
     # subsequent tests.
     del v1, v2
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testConnectWithClusterResolver(self):
     remote.connect_to_cluster(self._cluster_resolver)
 
@@ -672,12 +721,10 @@ class MultiJobsTest(test.TestCase, parameterized.TestCase):
     with ops.device('/job:my_worker/task:1/device:CPU:0'):
       self.assertAllEqual(worker_fn(), 8)
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testConnectToClusterTwiceOk(self):
     remote.connect_to_cluster(self._cluster_resolver)
     remote.connect_to_cluster(self._cluster_resolver)
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testConnectToClusterOnMismatchedDevice(self):
     remote.connect_to_cluster(self._cluster_resolver)
 
@@ -687,17 +734,27 @@ class MultiJobsTest(test.TestCase, parameterized.TestCase):
     with self.assertRaises(ValueError):
       remote.connect_to_cluster(self._cluster_resolver)
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testConnectToClusterWithLocalMaster(self):
     local_resolver = SimpleClusterResolver(ClusterSpec({}), master='local')
     remote.connect_to_cluster(local_resolver)
 
-  @test_util.eager_lazy_remote_copy_on_and_off
   def testConnectToClusterInGraphModeWillFail(self):
     ops.disable_eager_execution()
     with self.assertRaises(ValueError):
       remote.connect_to_cluster(self._cluster_resolver)
     ops.enable_eager_execution()
+
+  def testConnectToClusterWithoutLocalGpu(self):
+    # Only remote workers have GPU devices
+    context.context().set_visible_devices([], 'GPU')
+    # Ensure that no default device is set in eager context
+    remote.connect_to_cluster(self._cluster_resolver,
+                              make_master_device_default=False)
+    self.assertEmpty(context.get_device_name())
+
+    v1 = variables.Variable(initial_value=0)
+    v1.assign_add(1)
+    self.assertAllEqual(v1.read_value(), 1)
 
 
 def _strip_prefix(s, prefix):

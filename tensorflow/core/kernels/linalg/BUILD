@@ -23,7 +23,8 @@ package(
         "//tensorflow:__subpackages__",
         "//tensorflow:internal",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    features = ["-layering_check"],
+    licenses = ["notice"],
 )
 
 # TODO(rmlarsen): Remove ASAP.
@@ -34,6 +35,8 @@ package_group(
 
 # Export a few files for use on Android.
 exports_files([
+    "cholesky_op.cc",
+    "determinant_op.cc",
     "einsum_op_impl_half.cc",
     "einsum_op_impl_bfloat16.cc",
     "einsum_op_impl_int32.cc",
@@ -46,11 +49,21 @@ exports_files([
     "einsum_op.h",
     "linalg_ops_common.h",
     "linalg_ops_common.cc",
+    "matrix_band_part_op.h",
+    "matrix_band_part_op.cc",
     "matrix_diag_op.h",
     "matrix_diag_op.cc",
     "matrix_inverse_op.cc",
     "matrix_set_diag_op.h",
     "matrix_set_diag_op.cc",
+    "matrix_triangular_solve_op_complex.cc",
+    "matrix_triangular_solve_op_impl.h",
+    "matrix_triangular_solve_op_real.cc",
+    "qr_op_complex128.cc",
+    "qr_op_complex64.cc",
+    "qr_op_double.cc",
+    "qr_op_float.cc",
+    "qr_op_impl.h",
 ])
 
 # Public support libraries ----------------------------------------------------
@@ -91,10 +104,11 @@ LINALG_DEPS = [
     "//tensorflow/core:lib",
     "//tensorflow/core/kernels:cast_op",
     "//tensorflow/core/kernels:fill_functor",
-] + if_cuda([
-    ":eye_functor",
-    "//tensorflow/core/util:cuda_solvers",
     "//tensorflow/core/kernels:transpose_functor",
+] + if_cuda_or_rocm([
+    ":eye_functor",
+]) + if_cuda([
+    "//tensorflow/core/util:cuda_solvers",
 ]) + if_rocm([
     "//tensorflow/core/util:rocm_solvers",
 ])
@@ -120,7 +134,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "cholesky_op",
     prefix = "cholesky_op",
-    deps = if_cuda([
+    deps = if_cuda_or_rocm([
         ":matrix_band_part_op",
     ]) + LINALG_DEPS,
 )
@@ -245,7 +259,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "qr_op",
     prefix = "qr_op",
-    deps = LINALG_DEPS + if_cuda([
+    deps = LINALG_DEPS + if_cuda_or_rocm([
         "//tensorflow/core/kernels:cwise_op",
         ":matrix_band_part_op",
     ]),
@@ -260,9 +274,12 @@ tf_kernel_library(
 tf_kernel_library(
     name = "lu_op",
     prefix = "lu_op",
-    deps = if_cuda([
-        "//tensorflow/core/util:cuda_solvers",
+    deps = if_cuda_or_rocm([
         "//tensorflow/core/kernels:transpose_functor",
+    ]) + if_cuda([
+        "//tensorflow/core/util:cuda_solvers",
+    ]) + if_rocm([
+        "//tensorflow/core/util:rocm_solvers",
     ]) + [
         "//third_party/eigen3",
         "//tensorflow/core:framework",
@@ -355,7 +372,7 @@ tf_cuda_cc_test(
 
 # A file group which contains all operators which are known to work on mobile.
 filegroup(
-    name = "android_all_op_kernels",
+    name = "portable_all_op_kernels",
     srcs = glob(
         [
             "*.cc",

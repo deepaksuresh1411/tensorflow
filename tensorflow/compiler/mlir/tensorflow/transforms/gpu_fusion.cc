@@ -25,6 +25,7 @@ limitations under the License.
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/passes_detail.h"
 
 #define DEBUG_TYPE "tf-gpu-op-fusion"
 
@@ -36,9 +37,9 @@ namespace {
 // GpuOpFusionPass is a pass performing fusion specific to GPU targets.
 // This is an ad-hoc pass for now, but should be integrated with some notion
 // of "target" in the MLIR pipeline in the future.
-class GpuOpFusionPass : public PassWrapper<GpuOpFusionPass, FunctionPass> {
+class GpuOpFusionPass : public TensorflowGPUFusionBase<GpuOpFusionPass> {
  public:
-  void runOnFunction() final;
+  void runOnOperation() final;
 };
 
 //   %y:6 = "tf.FusedBatchNormV3"(%x, %scale, %offset, %mean, %variance)
@@ -96,7 +97,7 @@ struct ReluToFusedBatchNorm : public OpRewritePattern<ReluOp> {
     state.addOperands(batch_norm.getOperands());
     if (side_input) state.operands.push_back(side_input);
     state.addTypes(batch_norm.getResultTypes());
-    state.addAttributes(batch_norm.getAttrs());
+    state.addAttributes(batch_norm->getAttrs());
     Operation *op = rewriter.createOperation(state);
     rewriter.replaceOp(batch_norm, op->getResults());
 
@@ -115,11 +116,11 @@ struct ReluToFusedBatchNorm : public OpRewritePattern<ReluOp> {
   }
 };
 
-void GpuOpFusionPass::runOnFunction() {
-  FuncOp func = getFunction();
-  OwningRewritePatternList patterns;
-  patterns.insert<ReluToFusedBatchNorm>(&getContext());
-  applyPatternsAndFoldGreedily(func, std::move(patterns));
+void GpuOpFusionPass::runOnOperation() {
+  FuncOp func = getOperation();
+  RewritePatternSet patterns(&getContext());
+  patterns.add<ReluToFusedBatchNorm>(&getContext());
+  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
 
 }  // namespace
@@ -127,9 +128,6 @@ void GpuOpFusionPass::runOnFunction() {
 std::unique_ptr<OperationPass<FuncOp>> CreateGpuOpFusionPass() {
   return std::make_unique<GpuOpFusionPass>();
 }
-
-static PassRegistration<GpuOpFusionPass> layout_assignment(
-    "tf-gpu-op-fusion", "Fusion optimization for GPU targets");
 
 }  // namespace TF
 }  // namespace mlir

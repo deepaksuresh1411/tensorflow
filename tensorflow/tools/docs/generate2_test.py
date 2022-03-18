@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for tensorflow.tools.docs.generate2."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import shutil
 import types
@@ -36,6 +32,7 @@ fake_tf.nn = tf.nn
 fake_tf.summary = tf.summary
 fake_tf.raw_ops = types.ModuleType('raw_ops')
 fake_tf.Module = tf.Module
+fake_tf.__version__ = tf.__version__
 
 for name in sorted(dir(tf.raw_ops))[:5]:
   setattr(fake_tf.raw_ops, name, getattr(tf.raw_ops, name))
@@ -54,7 +51,6 @@ class Generate2Test(googletest.TestCase):
           output_dir=output_dir,
           code_url_prefix='',
           search_hints=True,
-          gen_report=False,
       )
 
 

@@ -28,6 +28,7 @@ limitations under the License.
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/passes_detail.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/tpu_rewrite_device_util.h"
 
 namespace mlir {
@@ -190,7 +191,7 @@ void PropagateDevicesInGraph(
       if (new_device.empty()) continue;
 
       auto new_device_attr =
-          mlir::StringAttr::get(new_device, op_to_update->getContext());
+          mlir::StringAttr::get(op_to_update->getContext(), new_device);
       op_to_update->setAttr(kDeviceAttr, new_device_attr);
       PopulateDeviceForOpResults(*op_to_update, new_device_attr.getValue(),
                                  value_to_device);
@@ -219,18 +220,18 @@ void PropagateDevicesToResults(
           operand.getOperandNumber(), kFuncDeviceAttr);
       if (device_attr && !device_attr.getValue().empty()) continue;
       func.setResultAttr(operand.getOperandNumber(), kFuncDeviceAttr,
-                         StringAttr::get(it->getSecond(), func.getContext()));
+                         StringAttr::get(func.getContext(), it->getSecond()));
     }
   }
 }
 
 struct TPUDevicePropagation
-    : public PassWrapper<TPUDevicePropagation, FunctionPass> {
-  void runOnFunction() override;
+    : public TF::TPUDevicePropagationPassBase<TPUDevicePropagation> {
+  void runOnOperation() override;
 };
 
-void TPUDevicePropagation::runOnFunction() {
-  FuncOp func = getFunction();
+void TPUDevicePropagation::runOnOperation() {
+  FuncOp func = getOperation();
   if (!IsSupportedGraph(func)) return;
 
   llvm::DenseMap<Value, llvm::StringRef> value_to_device;
@@ -245,9 +246,6 @@ void TPUDevicePropagation::runOnFunction() {
 std::unique_ptr<OperationPass<FuncOp>> CreateTPUDevicePropagationPass() {
   return std::make_unique<TPUDevicePropagation>();
 }
-
-static PassRegistration<TPUDevicePropagation> pass(
-    "tf-tpu-device-propagation", "Propagates TPU devices from ops to users");
 
 }  // namespace TFTPU
 }  // namespace mlir

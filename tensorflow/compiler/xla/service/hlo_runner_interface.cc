@@ -63,12 +63,26 @@ HloRunnerInterface::ReadModuleFromTextProtoFile(
 /*static*/ StatusOr<std::unique_ptr<HloModule>>
 HloRunnerInterface::ReadModuleFromHloTextFile(
     const std::string& filename, const DebugOptions& debug_options) {
-  string hlo_string;
+  std::string hlo_string;
   TF_RETURN_IF_ERROR(tensorflow::ReadFileToString(tensorflow::Env::Default(),
                                                   filename, &hlo_string));
   HloModuleConfig config;
   config.set_debug_options(debug_options);
   return ParseAndReturnUnverifiedModule(hlo_string, config);
+}
+
+/*static*/ StatusOr<std::unique_ptr<HloModule>>
+HloRunnerInterface::ReadModuleFromModuleBinaryProtofile(
+    const std::string& filename, const DebugOptions& debug_options) {
+  HloModuleProto module_proto;
+  TF_RETURN_IF_ERROR(tensorflow::ReadBinaryProto(tensorflow::Env::Default(),
+                                                 filename, &module_proto));
+
+  TF_ASSIGN_OR_RETURN(
+      HloModuleConfig module_config,
+      HloModule::CreateModuleConfigFromProto(module_proto, debug_options));
+
+  return HloModule::CreateFromProto(module_proto, module_config);
 }
 
 StatusOr<Literal> HloRunnerInterface::Execute(
@@ -88,7 +102,7 @@ StatusOr<Literal> HloRunnerInterface::Execute(
 }
 
 StatusOr<Literal> HloRunnerInterface::ExecuteWithExecutable(
-    std::unique_ptr<Executable> executable, absl::Span<const Literal> arguments,
+    Executable* executable, absl::Span<const Literal> arguments,
     ExecutionProfile* profile) {
   // Construct a vector of plain pointers for the arguments.
   std::vector<const Literal*> argument_pointers;
@@ -96,8 +110,7 @@ StatusOr<Literal> HloRunnerInterface::ExecuteWithExecutable(
   for (const auto& argument : arguments) {
     argument_pointers.push_back(&argument);
   }
-  return ExecuteWithExecutable(std::move(executable), argument_pointers,
-                               nullptr);
+  return ExecuteWithExecutable(executable, argument_pointers, nullptr);
 }
 
 }  // namespace xla

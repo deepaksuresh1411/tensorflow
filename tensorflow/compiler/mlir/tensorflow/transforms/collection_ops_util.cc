@@ -21,7 +21,7 @@ limitations under the License.
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
@@ -53,7 +53,7 @@ Value GetR1Const(ArrayRef<int64_t> r1, OpBuilder builder, Location loc,
   values.reserve(rank);
   for (int i = 0; i < rank; ++i) values.push_back(APInt(bitwidth, r1[i]));
   auto result_type = RankedTensorType::get(
-      {rank}, IntegerType::get(bitwidth, builder.getContext()));
+      {rank}, IntegerType::get(builder.getContext(), bitwidth));
   return builder.create<TF::ConstOp>(
       loc, DenseElementsAttr::get(result_type, values));
 }

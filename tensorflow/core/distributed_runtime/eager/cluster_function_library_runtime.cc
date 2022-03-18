@@ -192,7 +192,7 @@ void EagerClusterFunctionLibraryRuntime::Run(
   if (opts.op_id.has_value()) {
     remote_op->set_id(opts.op_id.value());
   } else {
-    remote_op->set_id(kInvalidRemoteOpId);
+    remote_op->set_id(kInvalidOpId);
   }
   remote_op->set_is_function(true);
   remote_op->set_is_component_function(true);
@@ -204,6 +204,8 @@ void EagerClusterFunctionLibraryRuntime::Run(
   CancellationManager* cm = opts.cancellation_manager;
   CancellationToken token = 0;
   auto call_opts = std::make_shared<CallOptions>();
+  call_opts->SetTimeout(
+      ctx_->session_options().config.operation_timeout_in_ms());
   if (cm != nullptr) {
     token = cm->get_cancellation_token();
     const bool already_cancelled = !cm->RegisterCallback(
@@ -284,12 +286,8 @@ void EagerClusterFunctionLibraryRuntime::CleanUp(
 
 DistributedFunctionLibraryRuntime* CreateClusterFLR(
     const uint64 context_id, EagerContext* ctx, WorkerSession* worker_session) {
-  if (ctx->LazyCopyFunctionRemoteInputs()) {
-    return new EagerClusterFunctionLibraryRuntime(
-        context_id, ctx, worker_session->remote_device_mgr());
-  } else {
-    return worker_session->cluster_flr();
-  }
+  return new EagerClusterFunctionLibraryRuntime(
+      context_id, ctx, worker_session->remote_device_mgr());
 }
 
 }  // namespace eager

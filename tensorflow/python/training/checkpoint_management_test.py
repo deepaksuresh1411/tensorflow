@@ -14,10 +14,6 @@
 # =============================================================================
 """Tests for tensorflow.python.training.saver.py."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import contextlib
 import os
 import shutil
@@ -69,7 +65,7 @@ class LatestCheckpointWithRelativePaths(test.TestCase):
       # Jump to that directory until this test is done.
       with self.tempWorkingDir(tempdir):
         # Save training snapshots to a relative path.
-        traindir = "train/"
+        traindir = "train"
         os.mkdir(traindir)
         # Collides with the default name of the checkpoint state file.
         filepath = os.path.join(traindir, "checkpoint")
@@ -109,7 +105,7 @@ class LatestCheckpointWithRelativePaths(test.TestCase):
       with self.tempWorkingDir(tempdir):
 
         # Save training snapshots to a relative path.
-        traindir = "train/"
+        traindir = "train"
         os.mkdir(traindir)
 
         filename = "snapshot"

@@ -26,6 +26,7 @@ limitations under the License.
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/passes_detail.h"
 
 namespace mlir {
 
@@ -49,8 +50,8 @@ namespace {
 // implementations to decrease the number of operations needed to perform a
 // computation.
 struct FusedKernelMatcherPass
-    : public PassWrapper<FusedKernelMatcherPass, FunctionPass> {
-  void runOnFunction() override;
+    : public FusedKernelMatcherPassBase<FusedKernelMatcherPass> {
+  void runOnOperation() override;
 };
 
 bool IsActivationFunction(Operation *op) {
@@ -106,6 +107,16 @@ class FuseContractionWithBiasAdd : public OpRewritePattern<SrcOpT> {
   LogicalResult matchAndRewrite(SrcOpT contraction,
                                 PatternRewriter &rewriter) const override {
     auto context = rewriter.getContext();
+
+    // We do support fusion only if the contraction operation is inside one of
+    // the expected operations with regions. Other operations can have semantics
+    // that is not compatible with fusion (e.g. region compilation).
+    if (!isa<FuncOp, IfOp, WhileOp>(contraction->getParentOp())) {
+      return rewriter.notifyMatchFailure(
+          contraction,
+          "fused operation must be nested inside a function, If or While");
+    }
+
     // If the contraction is used in multiple places, fusing it will only create
     // more contraction nodes, which is slower.
     if (!contraction.getResult().hasOneUse())
@@ -125,7 +136,7 @@ class FuseContractionWithBiasAdd : public OpRewritePattern<SrcOpT> {
 
     SmallVector<Location, 3> locations{contraction.getLoc(), bias_add.getLoc()};
     SmallVector<Attribute, 2> fused_ops{StringAttr::get(
-        bias_add.getOperation()->getName().stripDialect(), context)};
+        context, bias_add.getOperation()->getName().stripDialect())};
 
     // BiasAdd may or may not feed into an activation function.
     auto activation = GetActivation(bias_add);
@@ -139,7 +150,7 @@ class FuseContractionWithBiasAdd : public OpRewritePattern<SrcOpT> {
     if (fuse_activation) {
       locations.push_back(activation->getLoc());
       fused_ops.push_back(
-          StringAttr::get(activation->getName().stripDialect(), context));
+          StringAttr::get(context, activation->getName().stripDialect()));
       result_type = activation->getResultTypes().front();
     } else {
       result_type = bias_add.getResult().getType();
@@ -156,15 +167,15 @@ class FuseContractionWithBiasAdd : public OpRewritePattern<SrcOpT> {
     // The fused contraction has the same attributes as the original
     // contraction, with two additions: the list of ops which have been fused
     // together; epsilon (only with FusedBatchNorm).
-    std::vector<NamedAttribute> attrs = contraction.getAttrs();
-    ArrayAttr fused_ops_attr = ArrayAttr::get(fused_ops, context);
+    std::vector<NamedAttribute> attrs = contraction->getAttrs();
+    ArrayAttr fused_ops_attr = ArrayAttr::get(context, fused_ops);
     attrs.push_back(
-        NamedAttribute(Identifier::get("fused_ops", context), fused_ops_attr));
+        NamedAttribute(StringAttr::get(context, "fused_ops"), fused_ops_attr));
     // Epsilon is used only in fusions with the FusedBatchNorm op, so we zero it
     // here.
     Attribute epsilon = rewriter.getF32FloatAttr(0);
     attrs.push_back(
-        NamedAttribute(Identifier::get("epsilon", context), epsilon));
+        NamedAttribute(StringAttr::get(context, "epsilon"), epsilon));
 
     // Insert fused operation right before the BiasAdd operation to guarantee
     // that bias value dominates the fused operation. We already verified that
@@ -194,7 +205,7 @@ class FuseConv2DBiasAdd
                          PatternRewriter &rewriter) const override {
     // Verify that the data formats match and are valid for fusion.
     if (conv.data_format() != bias_add.data_format()) {
-      rewriter.notifyMatchFailure(conv, [&](Diagnostic &diag) {
+      (void)rewriter.notifyMatchFailure(conv, [&](Diagnostic &diag) {
         diag << "data format does not match Conv2D data format ("
              << bias_add.data_format() << " vs " << conv.data_format() << ")";
       });
@@ -202,7 +213,7 @@ class FuseConv2DBiasAdd
     }
     // Verify the data type is supported.
     if (!conv.T().isF32() && !conv.T().isF64()) {
-      rewriter.notifyMatchFailure(conv, [&](Diagnostic &diag) {
+      (void)rewriter.notifyMatchFailure(conv, [&](Diagnostic &diag) {
         diag << "supported data types for _FusedConv2D are float and double, "
              << " but got " << conv.T();
       });
@@ -223,7 +234,7 @@ class FuseMatMulBiasAdd
                          PatternRewriter &rewriter) const override {
     // FusedMatMul kernel supports limited set of data types.
     if (!matmul.T().isF32() && !matmul.T().isBF16()) {
-      rewriter.notifyMatchFailure(matmul, [&](Diagnostic &diag) {
+      (void)rewriter.notifyMatchFailure(matmul, [&](Diagnostic &diag) {
         diag << "supported data types for _FusedMatMul are float and bfloat16, "
              << " but got " << matmul.T();
       });
@@ -233,12 +244,12 @@ class FuseMatMulBiasAdd
   }
 };
 
-void FusedKernelMatcherPass::runOnFunction() {
-  OwningRewritePatternList patterns;
-  auto func = getFunction();
-  patterns.insert<FuseConv2DBiasAdd, FuseMatMulBiasAdd>(&getContext());
+void FusedKernelMatcherPass::runOnOperation() {
+  RewritePatternSet patterns(&getContext());
+  auto func = getOperation();
+  patterns.add<FuseConv2DBiasAdd, FuseMatMulBiasAdd>(&getContext());
 
-  applyPatternsAndFoldGreedily(func, std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
 
 }  // namespace
@@ -246,10 +257,6 @@ void FusedKernelMatcherPass::runOnFunction() {
 std::unique_ptr<OperationPass<FuncOp>> CreateFusedKernelMatcherPass() {
   return std::make_unique<FusedKernelMatcherPass>();
 }
-
-static PassRegistration<FusedKernelMatcherPass> pass(
-    "tf-fused-kernel-matcher",
-    "Matches computations corresponding to optimized fused kernels");
 
 }  // namespace TF
 

@@ -57,7 +57,7 @@ class BufferValueMap {
   // contiguous, while BufferNumbers may not be. BufferNumbers may not be
   // dense because buffers may be created and destroyed during the analysis
   // construction process.
-  using BufferNumber = int64;
+  using BufferNumber = int64_t;
 
   explicit BufferValueMap(const HloModule* module,
                           const HloDataflowAnalysis& dataflow)
@@ -97,7 +97,7 @@ class BufferValueMap {
         // If multiple buffers are aliased merge these buffers together into a
         // single buffer (arbitrarily chosen as the first buffer in the vector).
         if (aliased_buffers.size() > 1) {
-          for (int64 i = 1; i < aliased_buffers.size(); ++i) {
+          for (int64_t i = 1; i < aliased_buffers.size(); ++i) {
             MergeBuffers(/*from=*/aliased_buffers[i],
                          /*to=*/aliased_buffers[0]);
           }
@@ -114,6 +114,7 @@ class BufferValueMap {
   // iterate through all buffers stabily.
   std::vector<BufferNumber> ComputeSortedBufferNumbers() const {
     std::vector<BufferNumber> buffer_numbers;
+    buffer_numbers.reserve(buffers_.size());
     for (const auto& pair : buffers_) {
       buffer_numbers.push_back(pair.first);
     }
@@ -211,7 +212,7 @@ class BufferValueMap {
                                   std::vector<BufferNumber>* aliased_buffers) {
     VLOG(3) << "Compute kWhile aliases";
     // Value is init of a while (use is while).
-    for (const HloUse& use : value.uses()) {
+    for (const HloUse& use : value.GetUses()) {
       if (use.instruction->opcode() == HloOpcode::kWhile) {
         // Determine the while value that this shares a buffer with.
         const HloValue& while_value =
@@ -328,7 +329,7 @@ class BufferValueMap {
       }
     }
 
-    for (const HloUse& use : value.uses()) {
+    for (const HloUse& use : value.GetUses()) {
       for (const auto& operand_and_output_index :
            HloDataflowAnalysis::GetInPlaceInputOutputPairs(use.instruction)) {
         if (use == operand_and_output_index.first) {
@@ -344,7 +345,7 @@ class BufferValueMap {
   // Compute and return a vector of buffers that the given value must be
   // contained in due to HLO aliasing rules.
   std::vector<BufferNumber> ComputeAliasedBuffers(const HloValue& value) {
-    for (const HloUse& use : value.uses()) {
+    for (const HloUse& use : value.GetUses()) {
       VLOG(2) << "Use of value " << value.ToShortString() << ": " << use;
     }
     std::vector<BufferNumber> aliased_buffers;
@@ -484,8 +485,9 @@ Status HloAliasAnalysis::Verify() const {
   return Status::OK();
 }
 
-string HloAliasAnalysis::ToString() const {
-  string out = absl::StrCat("HloAliasAnalysis, module ", module_->name(), "\n");
+std::string HloAliasAnalysis::ToString() const {
+  std::string out =
+      absl::StrCat("HloAliasAnalysis, module ", module_->name(), "\n");
   StrAppend(&out, "  Buffers at each position:\n");
   for (const HloComputation* computation : module_->computations()) {
     for (const HloInstruction* instruction : computation->instructions()) {
@@ -602,7 +604,7 @@ void HloAliasAnalysis::MergeBuffers(const HloBuffer& to,
     live_out_buffers_.insert(&buffers_[to.id()]);
   }
 
-  int64 from_id = from.id();
+  int64_t from_id = from.id();
   if (from_id != buffers_.size() - 1) {
     // Now `from` is invalid, move the last element of buffers to replace `from`
     // and update references to the last element.
@@ -673,7 +675,7 @@ bool HloAliasAnalysis::HasLiveRangeInterference(
                                 dataflow_analysis())) {
         VLOG(1) << "In buffer " << buffer.id() << " containing values:\n  "
                 << absl::StrJoin(values, ", ",
-                                 [](string* out, const HloValue* value) {
+                                 [](std::string* out, const HloValue* value) {
                                    StrAppend(out, value->ToShortString());
                                  })
 

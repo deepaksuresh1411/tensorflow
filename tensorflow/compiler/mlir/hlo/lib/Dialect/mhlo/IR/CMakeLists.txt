@@ -30,16 +30,29 @@ add_mlir_dialect_library(ChloDialect
 
   DEPENDS
   MLIRchlo_opsIncGen
-)
-target_link_libraries(ChloDialect PUBLIC MLIRIR)
 
-add_mlir_library(MhloInferFusibilityOpInterface
-  infer_fusibility_op_interface.cc
+  LINK_LIBS PUBLIC
+  MhloDialect
+  MLIRIR
+  MLIRMhloUtils
+)
+
+add_mlir_library(MhloInferShapeEqualityOpInterface
+  infer_shape_equality_op_interface.cc
+
+  LINK_LIBS PUBLIC
+  MLIRIR
 
   DEPENDS
-  MLIRinfer_fusibility_op_interfaceIncGen
+  MLIRinfer_shape_equality_op_interfaceIncGen
 )
 
+add_mlir_library(HloOpsCommon
+  hlo_ops_common.cc
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+)
 
 add_mlir_dialect_library(MhloDialect
   hlo_ops.cc
@@ -50,47 +63,24 @@ add_mlir_dialect_library(MhloDialect
   MLIRhlo_opsIncGen
   MLIRMhloCanonicalizeIncGen
   MLIRMhloRewriterIncGen
-  MLIRinfer_fusibility_op_interfaceIncGen
+  MLIRinfer_shape_equality_op_interfaceIncGen
 )
 target_link_libraries(MhloDialect
   PUBLIC
   MLIRIR
-  MhloInferFusibilityOpInterface
+  MhloInferShapeEqualityOpInterface
   MLIRMhloUtils
+  HloOpsCommon
 )
-
-
-add_mlir_dialect_library(LmhloDialect
-  lhlo_ops.cc
-
-  DEPENDS
-  MLIRlhlo_opsIncGen
-)
-target_link_libraries(LmhloDialect PUBLIC MLIRIR)
-
-add_mlir_dialect_library(LmhloGPUDialect
-  lhlo_gpu_ops.cc
-  lhlo_gpu_ops_structs.cc
-  lhlo_gpu_ops_enums.cc
-
-  DEPENDS
-  MLIRlhlo_gpu_opsIncGen
-)
-target_link_libraries(LmhloGPUDialect PUBLIC MLIRIR)
-
 
 add_mlir_dialect_library(MhloRegisterDialects
   init.cc
 DEPENDS
   MLIRchlo_opsIncGen
   MLIRhlo_opsIncGen
-  MLIRlhlo_opsIncGen
-  MLIRlhlo_gpu_opsIncGen
 )
 target_link_libraries(MhloRegisterDialects
   PUBLIC
   ChloDialect
   MhloDialect
-  LmhloDialect
-  LmhloGPUDialect
 )

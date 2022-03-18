@@ -14,14 +14,9 @@
 #,============================================================================
 """Tests for layer graphs construction & handling."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import warnings
 
 import numpy as np
-
 
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
@@ -51,11 +46,6 @@ from tensorflow.python.ops import string_ops
 from tensorflow.python.ops.ragged import ragged_factory_ops
 from tensorflow.python.platform import test
 from tensorflow.python.training.tracking.util import Checkpoint
-
-try:
-  import yaml  # pylint:disable=g-import-not-at-top
-except ImportError:
-  yaml = None
 
 
 class NetworkConstructionTest(keras_parameterized.TestCase):
@@ -123,14 +113,6 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
 
       network.add_update(state_ops.assign_add(layer.b, x4), inputs=True)
       self.assertEqual(len(network.updates), 7)
-
-  @combinations.generate(combinations.combine(mode=['graph']))
-  def test_get_updates_bn(self):
-    x1 = input_layer_lib.Input(shape=(1,))
-    layer = layers.BatchNormalization()
-    _ = layer(x1)
-
-    self.assertEqual(len(layer.updates), 2)
 
   def test_get_layer(self):
     # create a simple network
@@ -632,10 +614,6 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
       json_str = model.to_json()
       models.model_from_json(json_str)
 
-      if yaml is not None:
-        yaml_str = model.to_yaml()
-        models.model_from_yaml(yaml_str)
-
   @combinations.generate(combinations.combine(mode=['graph', 'eager']))
   def test_invalid_graphs(self):
     a = layers.Input(shape=(32,), name='input_a')
@@ -944,29 +922,7 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
     # Check that second input was correctly added to first.
     self.assertEqual(history.history['loss'][0], 0.0)
 
-  @combinations.generate(combinations.times(
-      combinations.keras_mode_combinations(mode='eager'),
-      combinations.combine(use_keras_tensors=False)))
-  def test_only_some_in_first_arg_derived_from_keras_layer(self):
-    class MyAddAll(layers.Layer):
-
-      def call(self, inputs):
-        x = inputs[0]
-        for inp in inputs[1:]:
-          if inp is not None:
-            x = x + inp
-        return x
-
-    input1 = input_layer_lib.Input(10)
-    input2 = input_layer_lib.Input(10)
-    layer = MyAddAll()
-
-    with self.assertRaisesRegexp(ValueError, 'construct a functional'):
-      layer([0.0, input1, None, input2, None])
-
-  @combinations.generate(combinations.times(
-      combinations.keras_mode_combinations(mode='eager'),
-      combinations.combine(use_keras_tensors=True)))
+  @combinations.generate(combinations.keras_mode_combinations(mode='eager'),)
   def test_only_some_in_first_arg_derived_from_keras_layer_keras_tensors(self):
     # This functionality is unsupported in v1 graphs
 
@@ -1146,7 +1102,6 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
   @combinations.generate(
       combinations.times(
           combinations.keras_mode_combinations(),
-          combinations.keras_tensor_combinations(),
           combinations.combine(share_already_used_layer=[True, False])))
   def test_call_kwarg_derived_from_keras_layer_and_first_arg_is_constant(
       self, share_already_used_layer):
@@ -1246,9 +1201,7 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
     # Check that second input was correctly added to first.
     self.assertEqual(history.history['loss'][0], 0.0)
 
-  @combinations.generate(combinations.times(
-      combinations.keras_mode_combinations(mode='eager'),
-      combinations.keras_tensor_combinations()))
+  @combinations.generate(combinations.keras_mode_combinations(mode='eager'))
   def test_call_some_not_all_nested_in_first_arg_derived_from_keras_layer(self):
     # This functionality is unsupported in v1 graphs
 
@@ -1390,10 +1343,6 @@ class NetworkConstructionTest(keras_parameterized.TestCase):
 
     json_str = model.to_json()
     models.model_from_json(json_str)
-
-    if yaml is not None:
-      yaml_str = model.to_yaml()
-      models.model_from_yaml(yaml_str)
 
   def test_subclassed_error_if_init_not_called(self):
 
@@ -1705,39 +1654,6 @@ class DefaultShapeInferenceBehaviorTest(keras_parameterized.TestCase):
     output = model(sample_input)
     self.assertEqual(output.shape, (1, 3))
 
-  @combinations.generate(combinations.keras_mode_combinations())
-  def test_sequential_as_downstream_of_masking_layer(self):
-    inputs = layers.Input(shape=(3, 4))
-    x = layers.Masking(mask_value=0., input_shape=(3, 4))(inputs)
-
-    s = sequential.Sequential()
-    s.add(layers.Dense(5, input_shape=(4,)))
-
-    x = layers.wrappers.TimeDistributed(s)(x)
-    model = training_lib.Model(inputs=inputs, outputs=x)
-    model.compile(
-        optimizer='rmsprop',
-        loss='mse',
-        run_eagerly=testing_utils.should_run_eagerly())
-
-    model_input = np.random.randint(
-        low=1, high=5, size=(10, 3, 4)).astype('float32')
-    for i in range(4):
-      model_input[i, i:, :] = 0.
-    model.fit(model_input,
-              np.random.random((10, 3, 5)), epochs=1, batch_size=6)
-
-    if not context.executing_eagerly():
-      # Note: this doesn't work in eager due to DeferredTensor/ops compatibility
-      # issue.
-      mask_outputs = [model.layers[1].compute_mask(model.layers[1].input)]
-      mask_outputs += [model.layers[2].compute_mask(
-          model.layers[2].input, mask_outputs[-1])]
-      func = backend.function([model.input], mask_outputs)
-      mask_outputs_val = func([model_input])
-      self.assertAllClose(mask_outputs_val[0], np.any(model_input, axis=-1))
-      self.assertAllClose(mask_outputs_val[1], np.any(model_input, axis=-1))
-
   @combinations.generate(combinations.combine(mode=['graph', 'eager']))
   def test_external_keras_serialization_compat_input_layers(self):
     inputs = input_layer_lib.Input(shape=(10,))
@@ -1918,18 +1834,6 @@ class NestedNetworkTest(keras_parameterized.TestCase):
 
     output_shape = network.compute_output_shape([(None, 1), (None, 1)])
     self.assertListEqual(output_shape.as_list(), [None, 1])
-
-  @combinations.generate(combinations.combine(mode=['graph']))
-  def test_updates_with_direct_call(self):
-    inputs = input_layer_lib.Input(shape=(10,))
-    x = layers.BatchNormalization()(inputs)
-    x = layers.Dense(10)(x)
-    model = training_lib.Model(inputs, x)
-
-    ph = backend.placeholder(shape=(10, 10))
-    model(ph)
-
-    self.assertLen(model.updates, 4)
 
   @combinations.generate(combinations.combine(mode=['graph', 'eager']))
   def test_dict_mapping_input(self):
@@ -2476,6 +2380,7 @@ class InputsOutputsErrorTest(keras_parameterized.TestCase):
 class FunctionalSubclassModel(training_lib.Model):
 
   def __init__(self, *args, **kwargs):
+    self.foo = {'foo': 'bar'}  # Make sure users can assign dict attributes
     my_input = input_layer_lib.Input(shape=(16,))
     dense = layers.Dense(32, activation='relu')
     output = dense(my_input)

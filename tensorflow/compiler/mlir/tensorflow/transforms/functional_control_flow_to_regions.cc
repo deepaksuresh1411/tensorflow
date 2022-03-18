@@ -18,7 +18,7 @@ limitations under the License.
 // tf.If -> tf.IfRegion and tf.While -> tf.WhileRegion
 
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
@@ -33,6 +33,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/passes_detail.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/attribute_utils.h"
 
 #define DEBUG_TYPE "tf-functional-cf-to-region"
@@ -43,8 +44,8 @@ namespace TF {
 namespace {
 
 struct FunctionalControlFlowToRegions
-    : public PassWrapper<FunctionalControlFlowToRegions,
-                         OperationPass<ModuleOp>> {
+    : public TF::FunctionalControlFlowToRegionsPassBase<
+          FunctionalControlFlowToRegions> {
   void runOnOperation() override;
 };
 
@@ -61,8 +62,10 @@ YieldOp CreateCall(Operation* op, FuncOp func, Region& caller_region,
   OpBuilder builder(caller_region);
   Block* entry = builder.createBlock(&caller_region);
 
+  auto loc = op->getLoc();
   if (use_region_args) {
-    entry->addArguments(args.getType());
+    auto inputs = func.getType().getInputs();
+    entry->addArguments(inputs, SmallVector<Location>(inputs.size(), loc));
     args = entry->getArguments();
   }
   llvm::SmallVector<Value, 4> casted_args;
@@ -71,13 +74,13 @@ YieldOp CreateCall(Operation* op, FuncOp func, Region& caller_region,
     Value arg = std::get<0>(ArgAndType);
     Type expected_type = std::get<1>(ArgAndType);
     if (arg.getType() != expected_type) {
-      arg = builder.create<CastOp>(op->getLoc(), expected_type, arg,
+      arg = builder.create<CastOp>(loc, expected_type, arg,
                                    /*Truncate=*/builder.getBoolAttr(false));
     }
     casted_args.push_back(arg);
   }
-  auto call = builder.create<CallOp>(op->getLoc(), func, casted_args);
-  return builder.create<YieldOp>(op->getLoc(), call.getResults());
+  auto call = builder.create<func::CallOp>(loc, func, casted_args);
+  return builder.create<YieldOp>(loc, call.getResults());
 }
 
 // Converts the condition for an IfOp/WhileOp to a boolean value.
@@ -94,8 +97,11 @@ Value ConvertConditionToBoolean(Operation* op, Value cond) {
 // Transform a functional IfOp to a region based IfRegionOp.
 LogicalResult ConvertIfOp(IfOp if_op) {
   Value cond = ConvertConditionToBoolean(if_op, if_op.cond());
-  auto if_region = OpBuilder(if_op).create<TF::IfRegionOp>(
-      if_op.getLoc(), if_op.getResultTypes(), cond, if_op.is_stateless());
+  OpBuilder builder(if_op);
+  auto if_region = builder.create<TF::IfRegionOp>(
+      if_op.getLoc(), if_op.getResultTypes(), cond, if_op.is_stateless(),
+      builder.getStringAttr(if_op.then_function().getName()),
+      builder.getStringAttr(if_op.else_function().getName()));
   CopyDeviceAndUnderscoredAttributes(if_op, if_region);
 
   CreateCall(if_op, if_op.then_function(),
@@ -156,10 +162,6 @@ std::unique_ptr<OperationPass<ModuleOp>>
 CreateTFFunctionalControlFlowToRegions() {
   return std::make_unique<FunctionalControlFlowToRegions>();
 }
-
-static PassRegistration<FunctionalControlFlowToRegions> pass(
-    "tf-functional-control-flow-to-regions",
-    "Transform functional control flow Ops to Region based counterparts");
 
 }  // namespace TF
 }  // namespace mlir

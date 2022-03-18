@@ -200,8 +200,10 @@ class TestResultCollection(
 
   @property
   def results(self) -> Iterable[TestResult]:
-    return itertools.chain([self.cpu_base_result, self.gpu_base_result],
-                           self.trt_results)
+    return filter(
+        lambda x: x is not None,
+        itertools.chain([self.cpu_base_result, self.gpu_base_result],
+                        self.trt_results))
 
 
 class _ModelHandlerBase(metaclass=abc.ABCMeta):
@@ -507,7 +509,7 @@ class TrtModelHandlerV2(_TrtModelHandlerBase, ModelHandlerV2):
         input_saved_model_tags=self.model_config.saved_model_tags,
         input_saved_model_signature_key=(
             self.model_config.saved_model_signature_key),
-        conversion_params=trt_convert_params)
+        **trt_convert_params._asdict())
 
   def _check_conversion(self, graph_func):
     graph_def = graph_func.graph.as_graph_def()
@@ -629,7 +631,13 @@ class _ModelHandlerManagerBase(metaclass=abc.ABCMeta):
       return model.run(inputs, warmup_iterations, benchmark_iterations,
                        **kwargs)
 
-    cpu_base_result = run_model(self._ori_model, enable_gpu=False)
+    # Some models include operations that can only run on GPU.
+    try:
+      cpu_base_result = run_model(self._ori_model, enable_gpu=False)
+    except RuntimeError as err:
+      logging.info("%s cannot run on CPU. Reason: %s.",
+                   self._ori_model.model_config, err)
+      cpu_base_result = None
     gpu_base_result = run_model(self._ori_model, enable_gpu=True)
     trt_results = list(map(run_model, self._trt_models))
 

@@ -28,7 +28,12 @@ namespace tf_saved_model {
 std::unique_ptr<OperationPass<ModuleOp>> CreateOptimizeGlobalTensorsPass();
 
 // Creates a pass that freezes tf_saved_model.global_tensor ops.
-std::unique_ptr<OperationPass<ModuleOp>> CreateFreezeGlobalTensorsPass();
+std::unique_ptr<OperationPass<ModuleOp>> CreateFreezeGlobalTensorsPass(
+    bool allow_mutable_tensors = false);
+
+// Creates a pass that freezes tf_saved_model.asset ops.
+std::unique_ptr<OperationPass<ModuleOp>> CreateFreezeAssetsPass(
+    std::string saved_model_dir = "");
 
 // Creates as pass that removes variables in the session initializer.
 // This job is required with lifting variable passes. Originally, the session
@@ -40,16 +45,14 @@ std::unique_ptr<OperationPass<ModuleOp>> CreateFreezeGlobalTensorsPass();
 std::unique_ptr<OperationPass<ModuleOp>>
 CreateRemoveVariablesInSessionInitializerPass();
 
-// Creates as pass that creates GlobalTensorOp for each variable from function
-// arguments and converts the function arguments to the corresponding saved
-// model arguments.
-std::unique_ptr<OperationPass<ModuleOp>> CreateLiftVariablesPass(
-    ::tensorflow::Session* session);
-
 // Creates a pass that removes duplicate 'tf_saved_model.bound_input' bindings.
 std::unique_ptr<OperationPass<FuncOp>> CreateDedupBoundInputBindingPass();
 
+#define GEN_PASS_REGISTRATION
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_savedmodel_passes.h.inc"
+
 }  // namespace tf_saved_model
+
 }  // namespace mlir
 
 #endif  // TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSFORMS_TF_SAVED_MODEL_PASSES_H_

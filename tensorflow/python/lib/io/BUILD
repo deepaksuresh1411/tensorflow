@@ -12,19 +12,7 @@ visibility = [
 
 package(
     default_visibility = visibility,
-    licenses = ["notice"],  # Apache 2.0
-)
-
-cc_library(
-    name = "py_record_reader_lib",
-    srcs = ["py_record_reader.cc"],
-    hdrs = ["py_record_reader.h"],
-    deps = [
-        "//tensorflow/c:c_api",
-        "//tensorflow/c:tf_status_helper",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
-    ],
+    licenses = ["notice"],
 )
 
 tf_python_pybind_extension(
@@ -47,7 +35,7 @@ py_library(
         "python_io.py",
         "tf_record.py",
     ],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
         ":_pywrap_file_io",
         ":_pywrap_record_io",
