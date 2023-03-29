@@ -168,6 +168,9 @@ class AdaptiveSharedBatchScheduler
                          int max_batch_size,
                          std::vector<std::unique_ptr<TaskType>>* output_tasks)>
         split_input_task_func;
+
+    // If true, the padding will not be appended.
+    bool disable_padding = false;
   };
 
   using BatchProcessor = std::function<void(std::unique_ptr<Batch<TaskType>>)>;
@@ -418,7 +421,7 @@ Status AdaptiveSharedBatchScheduler<TaskType>::Create(
         options.batches_to_average_over);
   }
   scheduler->reset(new AdaptiveSharedBatchScheduler<TaskType>(options));
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename TaskType>
@@ -466,7 +469,7 @@ Status AdaptiveSharedBatchScheduler<TaskType>::AddQueue(
                    this->shared_from_this(), options));
   mutex_lock l(mu_);
   queues_and_callbacks_[asbs_queue_raw] = process_batch_callback;
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename TaskType>
@@ -506,6 +509,9 @@ void AdaptiveSharedBatchScheduler<TaskType>::RemoveQueue(
 template <typename TaskType>
 void AdaptiveSharedBatchScheduler<TaskType>::MaybeScheduleNextBatchFIFO() {
   const internal::ASBSBatch<TaskType>* batch = *fifo_batches_.begin();
+  if (batch->schedulable_time_micros() > GetEnv()->NowMicros()) {
+    return;
+  }
   fifo_batches_.pop_front();
   // Queue may destroy itself after ReleaseBatch is called.
   batch->queue()->ReleaseBatch(batch);
@@ -813,7 +819,7 @@ Status ASBSQueue<TaskType>::Schedule(std::unique_ptr<TaskType>* task) {
   if (closed_batch) {
     scheduler_->MaybeScheduleClosedBatches();
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename TaskType>

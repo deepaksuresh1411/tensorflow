@@ -18,9 +18,11 @@ import numpy as np
 
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import check_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
@@ -310,7 +312,8 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
     return batch_shape.concatenate(matrix_shape)
 
   def _shape_tensor(self):
-    matrix_shape = array_ops.stack((self._num_rows, self._num_rows), axis=0)
+    matrix_shape = array_ops_stack.stack(
+        (self._num_rows, self._num_rows), axis=0)
     if self._batch_shape_arg is None:
       return matrix_shape
 
@@ -403,7 +406,9 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
       A `Tensor` with broadcast shape and same `dtype` as `self`.
     """
     with self._name_scope(name):  # pylint: disable=not-callable
-      mat = ops.convert_to_tensor_v2_with_dispatch(mat, name="mat")
+      mat = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          mat, name="mat"
+      )
       mat_diag = array_ops.matrix_diag_part(mat)
       new_diag = 1 + mat_diag
       return array_ops.matrix_set_diag(mat, new_diag)
@@ -486,6 +491,14 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
   @property
   def _composite_tensor_fields(self):
     return ("num_rows", "batch_shape", "dtype", "assert_proper_shapes")
+
+  def __getitem__(self, slices):
+    # Slice the batch shape and return a new LinearOperatorIdentity.
+    # Use a proxy shape and slice it. Use this as the new batch shape
+    new_batch_shape = array_ops.shape(
+        array_ops.ones(self._batch_shape_arg)[slices])
+    parameters = dict(self.parameters, batch_shape=new_batch_shape)
+    return LinearOperatorIdentity(**parameters)
 
 
 @tf_export("linalg.LinearOperatorScaledIdentity")
@@ -667,7 +680,8 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
     return batch_shape.concatenate(matrix_shape)
 
   def _shape_tensor(self):
-    matrix_shape = array_ops.stack((self._num_rows, self._num_rows), axis=0)
+    matrix_shape = array_ops_stack.stack(
+        (self._num_rows, self._num_rows), axis=0)
 
     batch_shape = array_ops.shape(self.multiplier)
     return array_ops.concat((batch_shape, matrix_shape), 0)
@@ -749,7 +763,9 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
       multiplier_vector = array_ops.expand_dims(self.multiplier, -1)
 
       # Shape [C1,...,Cc, M, M]
-      mat = ops.convert_to_tensor_v2_with_dispatch(mat, name="mat")
+      mat = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          mat, name="mat"
+      )
 
       # Shape [C1,...,Cc, M]
       mat_diag = array_ops.matrix_diag_part(mat)
@@ -782,3 +798,7 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
   @property
   def _composite_tensor_fields(self):
     return ("num_rows", "multiplier", "assert_proper_shapes")
+
+  @property
+  def _experimental_parameter_ndims_to_matrix_ndims(self):
+    return {"multiplier": 0}

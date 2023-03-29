@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <array>
+#include <optional>
 #include <string>
 
 #include "llvm/Support/FormatVariadic.h"
@@ -24,7 +25,7 @@ namespace tensorflow {
 namespace {
 
 const char* kReductionIR = R"(
-  func @main(%lhs: {0}, %rhs: {0}) -> tensor<f32> {
+  func.func @main(%lhs: {0}, %rhs: {0}) -> tensor<f32> {
     %lhs_abs = "tf.Abs"(%lhs) {{
       device = "/job:localhost/replica:0/task:0/device:CPU:0"
     } : ({0}) -> {0}
@@ -44,7 +45,7 @@ const char* kReductionIR = R"(
       keep_dims = false,
       device = "/job:localhost/replica:0/task:0/device:CPU:0"
     } : ({0}, tensor<1xi32>) -> tensor<f32>
-    return %result : tensor<f32>
+    func.return %result : tensor<f32>
   }
 )";
 
@@ -55,7 +56,7 @@ std::string FusedReduction1D(bool dynamic, int64_t size) {
 
 auto EigenFusedReduction1D() {
   return [](llvm::ArrayRef<Tensor> inputs,
-            llvm::Optional<Eigen::ThreadPoolDevice> device) {
+            std::optional<Eigen::ThreadPoolDevice> device) {
     std::array<int64_t, 1> dims_to_reduce{0};
     Tensor output(DT_FLOAT, {});
 
@@ -64,7 +65,7 @@ auto EigenFusedReduction1D() {
     auto out = output.tensor<float, 0>();
     out.setZero();
 
-    if (device.hasValue()) {
+    if (device.has_value()) {
       out.device(*device) = (lhs.abs() + rhs.exp()).sum(dims_to_reduce);
     } else {
       out = (lhs.abs() + rhs.exp()).prod(dims_to_reduce);

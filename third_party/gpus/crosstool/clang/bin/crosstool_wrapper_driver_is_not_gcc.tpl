@@ -175,6 +175,8 @@ def InvokeNvcc(argv, log=False):
   opt_option = GetOptionValue(argv, '-O')
   m_options = GetOptionValue(argv, '-m')
   m_options = ''.join([' -m' + m for m in m_options if m in ['32', '64']])
+  m_host_options = ''.join([' -m' + m for m in m_options if m not in ['32', '64']])
+  host_compiler_options = ' '.join([host_compiler_options, m_host_options])
   include_options = GetOptionValue(argv, '-I')
   out_file = GetOptionValue(argv, '-o')
   depfiles = GetOptionValue(argv, '-MF')
@@ -224,11 +226,21 @@ def InvokeNvcc(argv, log=False):
   out = ' -o ' + out_file[0]
 
   nvccopts = '-D_FORCE_INLINES '
-  for capability in GetOptionValue(argv, "--cuda-gpu-arch"):
+  capabilities_sm = set(GetOptionValue(argv, "--cuda-gpu-arch"))
+  capabilities_compute = set(GetOptionValue(argv, '--cuda-include-ptx'))
+  # When both "code=sm_xy" and "code=compute_xy" are requested for a single
+  # arch, they can be combined using "code=xy,compute_xy" which avoids a
+  # redundant PTX generation during compilation.
+  capabilities_both = capabilities_sm.intersection(capabilities_compute)
+  for capability in capabilities_both:
+    capability = capability[len('sm_'):]
+    nvccopts += r'-gencode=arch=compute_%s,code=\"sm_%s,compute_%s\" ' % (
+        capability, capability, capability)
+  for capability in capabilities_sm - capabilities_both:
     capability = capability[len('sm_'):]
     nvccopts += r'-gencode=arch=compute_%s,\"code=sm_%s\" ' % (capability,
                                                                capability)
-  for capability in GetOptionValue(argv, '--cuda-include-ptx'):
+  for capability in capabilities_compute - capabilities_both:
     capability = capability[len('sm_'):]
     nvccopts += r'-gencode=arch=compute_%s,\"code=compute_%s\" ' % (capability,
                                                                     capability)
@@ -238,6 +250,8 @@ def InvokeNvcc(argv, log=False):
   nvccopts += std_options
   nvccopts += m_options
   nvccopts += warning_options
+  # Force C++17 dialect (note, everything in just one string!)
+  nvccopts += ' --std c++17 '
   nvccopts += fatbin_options
 
   if depfiles:

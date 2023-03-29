@@ -19,8 +19,9 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/types/span.h"
+#include "tensorflow/compiler/jit/variable_info.h"
+#include "tensorflow/compiler/jit/variable_info_util.h"
 #include "tensorflow/compiler/jit/xla_device.h"
-#include "tensorflow/compiler/jit/xla_launch_util.h"
 #include "tensorflow/compiler/jit/xla_tensor.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
@@ -30,6 +31,8 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/maybe_owning_device_memory.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/statusor.h"
+#include "tensorflow/compiler/xla/stream_executor/device_memory_allocator.h"
+#include "tensorflow/compiler/xla/stream_executor/tpu/tpu_node_context.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/node_def_util.h"
@@ -54,8 +57,6 @@ limitations under the License.
 #include "tensorflow/core/tpu/tpu_defs.h"
 #include "tensorflow/core/tpu/tpu_execute.h"
 #include "tensorflow/core/util/stream_executor_util.h"
-#include "tensorflow/stream_executor/device_memory_allocator.h"
-#include "tensorflow/stream_executor/tpu/tpu_node_context.h"
 
 namespace tensorflow {
 namespace {
@@ -85,7 +86,7 @@ Status GetComputationCacheEntry(
   core::ScopedUnref lookup_unref(proto_lookup);
   TF_RETURN_IF_ERROR(proto_lookup->Lookup(key->vec<tstring>()(0), entry));
   *rendezvous_key_base = key->vec<tstring>()(1);
-  return Status::OK();
+  return OkStatus();
 }
 
 struct VariableUpdateMap {
@@ -118,7 +119,7 @@ xla::StatusOr<VariableUpdateMap> BuildVariableUpdateMap(
                        .second)
           << "Duplicate variable output index: " << output;
     }
-    return Status::OK();
+    return OkStatus();
   };
 
   // First add the updates produced by the compilation. Not all variables are
@@ -174,9 +175,8 @@ struct InputBuffers {
     xla::ShapedBuffer shaped_buffer(std::move(host_shape), buffers.shape(),
                                     device_ordinal);
     shaped_buffer.set_buffers(buffers.Map<se::DeviceMemoryBase>(
-        [](xla::MaybeOwningDeviceMemory* buffer) {
-          CHECK(buffer);
-          return buffer->AsDeviceMemoryBase();
+        [](const xla::MaybeOwningDeviceMemory& buffer) {
+          return buffer.AsDeviceMemoryBase();
         }));
     return shaped_buffer;
   }
@@ -237,7 +237,7 @@ xla::StatusOr<std::unique_ptr<InputBuffers>> BuildComputationInputs(
       }
     }
 
-    return Status::OK();
+    return OkStatus();
   };
 
   // Iterate over the inputs, validating the shapes of non-variable inputs,
@@ -332,7 +332,7 @@ xla::StatusOr<std::unique_ptr<InputBuffers>> BuildComputationInputs(
                                &xla_tensor->shaped_buffer());
       xla_tensor->WaitForDefinitionEventOnStream(stream);
     }
-    return Status::OK();
+    return OkStatus();
   };
 
   for (int i = 0; i < arg_list.size(); ++i) {
@@ -782,7 +782,7 @@ Status TPUExecuteOp::DoWork(OpKernelContext* context) {
                                    xla::GetDebugOptionsFromFlags());
         });
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 TPUExecuteOp::~TPUExecuteOp() = default;

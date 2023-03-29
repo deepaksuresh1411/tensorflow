@@ -53,15 +53,15 @@ inline tensorflow::TensorShape GetTfShape(const tfrt::TensorShape& shape) {
   return tensorflow::TensorShape(dims);
 }
 
-// Retrives TFRT TensorMetadata from a tensorflow::Tensor.
+// Retrieves TFRT TensorMetadata from a tensorflow::Tensor.
 inline tfrt::TensorMetadata GetTensorMetadata(
     const tensorflow::Tensor& tf_tensor) {
   auto dtype = tfd::GetTfrtDtype(tf_tensor.dtype());
   auto dim_sizes = tf_tensor.shape().dim_sizes();
   static_assert(sizeof(tfrt::Index) == sizeof(dim_sizes.front()),
                 "Invalid dimension type size");
-  auto shape = llvm::makeArrayRef(
-      reinterpret_cast<tfrt::Index*>(dim_sizes.data()), dim_sizes.size());
+  auto shape = llvm::ArrayRef(reinterpret_cast<tfrt::Index*>(dim_sizes.data()),
+                              dim_sizes.size());
   return tfrt::TensorMetadata(dtype, shape);
 }
 

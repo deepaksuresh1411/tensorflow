@@ -15,43 +15,32 @@
 """Contains LossScale classes."""
 import abc
 
-import six
-
 from tensorflow.python.distribute import distribution_strategy_context
 from tensorflow.python.distribute import reduce_util
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
-from tensorflow.python.training.tracking import base as trackable
+from tensorflow.python.trackable import base as trackable
 from tensorflow.python.util import deprecation
 from tensorflow.python.util import nest
 from tensorflow.python.util.tf_export import tf_export
 
 
-@six.add_metaclass(abc.ABCMeta)
 @deprecation.deprecated_endpoints('mixed_precision.experimental.LossScale',
                                   'train.experimental.LossScale')
 @tf_export(
-    'mixed_precision.experimental.LossScale',
-    'train.experimental.LossScale',
     v1=[
         'mixed_precision.LossScale',
         'mixed_precision.experimental.LossScale',
         'train.experimental.LossScale'
     ])
-class LossScale(trackable.Trackable):
+class LossScale(trackable.Trackable, metaclass=abc.ABCMeta):
   """Base class for all TF1 loss scales.
-
-  WARNING: This class is deprecated and will be unexposed from the TF 2
-  namespace in a future version of TensorFlow. Once this occurs, this class will
-  only be accessible as `tf.compat.v1.mixed_precision.LossScale`. All the
-  functionality in this class has been merged into
-  `tf.keras.mixed_precision.LossScaleOptimizer`, so this class is no longer
-  needed.
 
   This is an abstract base class, so you cannot instantiate it directly.
   Instead, use one of its concrete subclasses:
@@ -210,8 +199,6 @@ class LossScale(trackable.Trackable):
 @deprecation.deprecated_endpoints('mixed_precision.experimental.FixedLossScale',
                                   'train.experimental.FixedLossScale')
 @tf_export(
-    'mixed_precision.experimental.FixedLossScale',
-    'train.experimental.FixedLossScale',
     v1=[
         'mixed_precision.FixedLossScale',
         'mixed_precision.experimental.FixedLossScale',
@@ -219,13 +206,6 @@ class LossScale(trackable.Trackable):
     ])
 class FixedLossScale(LossScale):
   """Loss scale with a fixed value.
-
-  WARNING: This class is deprecated and will be unexposed from the TF 2
-  namespace in a future version of TensorFlow. Once this occurs, this class will
-  only be accessible as `tf.compat.v1.mixed_precision.FixedLossScale`. All the
-  functionality in this class has been merged into
-  `tf.keras.mixed_precision.LossScaleOptimizer`, so this class is no longer
-  needed.
 
   The loss scale is not updated for the lifetime of instances of this class.
   A given instance of this class always returns the same number when called.
@@ -249,7 +229,7 @@ class FixedLossScale(LossScale):
       ValueError: If loss_scale_value is less than 1.
     """
     super(FixedLossScale, self).__init__()
-    if not isinstance(loss_scale_value, six.integer_types + (float,)):
+    if not isinstance(loss_scale_value, (int, float)):
       raise ValueError('loss_scale_value must be a Python int or float.')
     if loss_scale_value < 1:
       raise ValueError('loss_scale_value must be at least 1.')
@@ -302,7 +282,7 @@ def _op_in_graph_mode(tensor):
 
 def _assign_if_finite(var, value):
   """Assigns a value to a variable if the value is finite."""
-  return control_flow_ops.cond(
+  return cond.cond(
       math_ops.is_finite(value), lambda: _op_in_graph_mode(var.assign(value)),
       control_flow_ops.no_op)
 
@@ -311,8 +291,6 @@ def _assign_if_finite(var, value):
     'mixed_precision.experimental.DynamicLossScale',
     'train.experimental.DynamicLossScale')
 @tf_export(
-    'mixed_precision.experimental.DynamicLossScale',
-    'train.experimental.DynamicLossScale',
     v1=[
         'mixed_precision.DynamicLossScale',
         'mixed_precision.experimental.DynamicLossScale',
@@ -320,13 +298,6 @@ def _assign_if_finite(var, value):
     ])
 class DynamicLossScale(LossScale):
   """Loss scale that dynamically adjusts itself.
-
-  WARNING: This class is deprecated and will be unexposed from the TF 2
-  namespace in a future version of TensorFlow. Once this occurs, this class will
-  only be accessible as `tf.compat.v1.mixed_precision.DynamicLossScale`. All the
-  functionality in this class has been merged into
-  `tf.keras.mixed_precision.LossScaleOptimizer`, so this class is no longer
-  needed.
 
   Dynamic loss scaling works by adjusting the loss scale as training progresses.
   The goal is to keep the loss scale as high as possible without overflowing the
@@ -422,7 +393,7 @@ class DynamicLossScale(LossScale):
             _assign_if_finite(self._current_loss_scale, new_loss_scale),
             self._num_good_steps.assign(0))
 
-      return control_flow_ops.cond(
+      return cond.cond(
           self._num_good_steps + 1 >= self._increment_period,
           incr_loss_scale, lambda: _op_in_graph_mode(
               self._num_good_steps.assign_add(1)))
@@ -436,8 +407,8 @@ class DynamicLossScale(LossScale):
           self._num_good_steps.assign(0),
           self._current_loss_scale.assign(new_loss_scale))
 
-    update_op = control_flow_ops.cond(is_finite, update_if_finite_grads,
-                                      update_if_not_finite_grads)
+    update_op = cond.cond(is_finite, update_if_finite_grads,
+                          update_if_not_finite_grads)
     should_apply_gradients = is_finite
     return update_op, should_apply_gradients
 
@@ -462,7 +433,7 @@ class DynamicLossScale(LossScale):
 
 def get(identifier):
   """Get a loss scale object."""
-  if isinstance(identifier, six.integer_types + (float,)):
+  if isinstance(identifier, (int, float)):
     return FixedLossScale(identifier)
   if identifier == 'dynamic':
     return DynamicLossScale()

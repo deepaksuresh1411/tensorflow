@@ -188,6 +188,10 @@ XLA_TEST_F(MathTest, RealFpOnlyOps) {
     auto ty = static_cast<PrimitiveType>(i);
     SCOPED_TRACE(PrimitiveType_Name(ty));
     Shape shape;
+    if (ty == U4 || ty == S4) {
+      // TODO(b/259306620): breaking MakeShape()
+      continue;
+    }
     if (primitive_util::IsArrayType(ty)) {
       shape = ShapeUtil::MakeShape(ty, {42});
     } else if (ty == PrimitiveType::TUPLE) {
@@ -197,6 +201,10 @@ XLA_TEST_F(MathTest, RealFpOnlyOps) {
     } else if (ty == PrimitiveType::TOKEN) {
       shape = ShapeUtil::MakeTokenShape();
     } else {
+      continue;
+    }
+    if (ty == F8E5M2 || ty == F8E4M3FN) {
+      // TODO(b/259609697): Add FP8 support to math ops
       continue;
     }
 
@@ -228,7 +236,7 @@ XLA_TEST_F(MathTest, SqrtF32) {
   Literal zero_literal = LiteralUtil::Zero(PrimitiveType::F32);
 
   std::unique_ptr<GlobalData> zero_data =
-      client_->TransferToServer(zero_literal).ConsumeValueOrDie();
+      client_->TransferToServer(zero_literal).value();
 
   XlaOp zero = Parameter(&builder, 0, zero_literal.shape(), "zero");
   Sqrt(zero);
@@ -241,7 +249,7 @@ XLA_TEST_F(MathTest, SqrtF64) {
   Literal zero_literal = LiteralUtil::Zero(PrimitiveType::F64);
 
   std::unique_ptr<GlobalData> zero_data =
-      client_->TransferToServer(zero_literal).ConsumeValueOrDie();
+      client_->TransferToServer(zero_literal).value();
 
   XlaOp zero = Parameter(&builder, 0, zero_literal.shape(), "zero");
   Sqrt(zero);

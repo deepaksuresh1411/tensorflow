@@ -23,6 +23,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/device_mgr.h"
 #include "tensorflow/core/common_runtime/function_testlib.h"
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
+#include "tensorflow/core/framework/full_type.pb.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function_testlib.h"
 #include "tensorflow/core/framework/metrics.h"
@@ -64,7 +65,7 @@ class TestClusterFLR : public DistributedFunctionLibraryRuntime {
       *handle = next_handle_;
       next_handle_++;
     }
-    done(Status::OK());
+    done(OkStatus());
   }
 
   void Run(const FunctionLibraryRuntime::Options& opts,
@@ -152,13 +153,13 @@ class ProcessFunctionLibraryRuntimeTest : public ::testing::Test {
               } else {
                 rendezvous_ref_counts_[step_id] = 1;
               }
-              return Status::OK();
+              return OkStatus();
             },
             [this](const int64_t step_id) {
               CHECK(rendezvous_ref_counts_.find(step_id) !=
                     rendezvous_ref_counts_.end());
               rendezvous_ref_counts_[step_id]--;
-              return Status::OK();
+              return OkStatus();
             }}));
   }
 
@@ -176,9 +177,9 @@ class ProcessFunctionLibraryRuntimeTest : public ::testing::Test {
   Tensor GPUToCPU(const Tensor& device_tensor) {
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
     CHECK(gpu_device_);
-    CHECK(gpu_device_->tensorflow_gpu_device_info() != nullptr);
+    CHECK(gpu_device_->tensorflow_accelerator_device_info() != nullptr);
     DeviceContext* device_context =
-        gpu_device_->tensorflow_gpu_device_info()->default_context;
+        gpu_device_->tensorflow_accelerator_device_info()->default_context;
 
     Tensor cpu_tensor(device_tensor.dtype(), device_tensor.shape());
     CHECK(device_context
@@ -194,9 +195,9 @@ class ProcessFunctionLibraryRuntimeTest : public ::testing::Test {
   Tensor CPUToGPU(const Tensor& cpu_tensor) {
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
     CHECK(gpu_device_);
-    CHECK(gpu_device_->tensorflow_gpu_device_info() != nullptr);
+    CHECK(gpu_device_->tensorflow_accelerator_device_info() != nullptr);
     DeviceContext* device_context =
-        gpu_device_->tensorflow_gpu_device_info()->default_context;
+        gpu_device_->tensorflow_accelerator_device_info()->default_context;
 
     Tensor device_tensor(gpu_device_->GetAllocator({}), cpu_tensor.dtype(),
                          cpu_tensor.shape(), {});
@@ -261,7 +262,7 @@ class ProcessFunctionLibraryRuntimeTest : public ::testing::Test {
     EXPECT_TRUE(errors::IsNotFound(status)) << "Actual status: " << status;
     EXPECT_TRUE(absl::StrContains(status.error_message(), "not found."));
 
-    return Status::OK();
+    return OkStatus();
   }
 
   Status Run(const string& name, FunctionLibraryRuntime::Options opts,
@@ -308,7 +309,7 @@ class ProcessFunctionLibraryRuntimeTest : public ::testing::Test {
     for (size_t i = 0; i < rets.size(); ++i) {
       *rets[i] = out[i];
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   std::unique_ptr<DynamicDeviceMgr> device_mgr_;
@@ -445,6 +446,45 @@ TEST_F(ProcessFunctionLibraryRuntimeTest, MultipleCallsSameDeviceXTimes) {
   TF_CHECK_OK(
       Run("XTimesFour", opts, {{"T", DT_FLOAT}}, instantiate_opts, {x}, {&y}));
   test::ExpectTensorEqual<float>(y, test::AsTensor<float>({4, 8, 12, 16}));
+}
+
+TEST_F(ProcessFunctionLibraryRuntimeTest,
+       SameDeviceXTimesFourInt32MultiDevice) {
+  Init({test::function::XTimesTwoInt32(), test::function::XTimesFourInt32()});
+  auto x = test::AsTensor<int32>({1, 2, 3, 4});
+  FunctionLibraryRuntime::Options opts;
+  opts.source_device = "/job:a/replica:0/task:0/cpu:0";
+  opts.remote_execution = true;
+  FunctionLibraryRuntime::InstantiateOptions instantiate_opts;
+  instantiate_opts.target = "/job:a/replica:0/task:0/cpu:0";
+  instantiate_opts.input_devices = {"/job:a/replica:0/task:0/cpu:0"};
+  instantiate_opts.output_devices = {"/job:a/replica:0/task:0/cpu:0"};
+  instantiate_opts.is_multi_device_function = true;
+  Tensor y;
+  TF_CHECK_OK(Run("XTimesFourInt32", opts, {{"T", DT_INT32}}, instantiate_opts,
+                  {x}, {&y}));
+  test::ExpectTensorEqual<int32>(y, test::AsTensor<int32>({4, 8, 12, 16}));
+}
+
+TEST_F(ProcessFunctionLibraryRuntimeTest,
+       MultipleCallsSameDeviceXTimesMultiDevice) {
+  Init({test::function::XTimesTwoInt32(), test::function::XTimesFourInt32()});
+  auto x = test::AsTensor<int32>({1, 2, 3, 4});
+  FunctionLibraryRuntime::Options opts;
+  opts.source_device = "/job:a/replica:0/task:0/cpu:0";
+  opts.remote_execution = true;
+  FunctionLibraryRuntime::InstantiateOptions instantiate_opts;
+  instantiate_opts.target = "/job:a/replica:0/task:0/cpu:0";
+  instantiate_opts.input_devices = {"/job:a/replica:0/task:0/cpu:0"};
+  instantiate_opts.output_devices = {"/job:a/replica:0/task:0/cpu:0"};
+  instantiate_opts.is_multi_device_function = true;
+  Tensor y;
+  TF_CHECK_OK(Run("XTimesTwoInt32", opts, {{"T", DT_INT32}}, instantiate_opts,
+                  {x}, {&y}));
+  test::ExpectTensorEqual<int32>(y, test::AsTensor<int32>({2, 4, 6, 8}));
+  TF_CHECK_OK(Run("XTimesFourInt32", opts, {{"T", DT_INT32}}, instantiate_opts,
+                  {x}, {&y}));
+  test::ExpectTensorEqual<int32>(y, test::AsTensor<int32>({4, 8, 12, 16}));
 }
 
 TEST_F(ProcessFunctionLibraryRuntimeTest, MultipleCallsSameDeviceFindDevice) {
@@ -753,6 +793,29 @@ TEST_F(ProcessFunctionLibraryRuntimeTest, MultiDevice_ErrorWhenListInput) {
       << "Actual error message: " << status.error_message();
 }
 
+TEST_F(ProcessFunctionLibraryRuntimeTest, FullTypeForInt32) {
+  FunctionDef def = test::function::XTimesTwoInt32();
+  // Add bad full type information to a node to cause Int32FulltypePass to
+  // return an error (TFT_PRODUCT[TFT_TENSOR] instead of
+  // TFT_PRODUCT[TFT_TENSOR[TFT_INT32]]).
+  def.mutable_node_def(2)->mutable_experimental_type()->set_type_id(
+      TFT_PRODUCT);
+  def.mutable_node_def(2)->mutable_experimental_type()->add_args()->set_type_id(
+      TFT_TENSOR);
+  Init({def});
+  FunctionLibraryRuntime::Handle handle;
+  Status status =
+      proc_flr_->Instantiate("XTimesTwoInt32", test::function::Attrs({}),
+                             MakeOptions("CPU:0", {"CPU:0"}, {}), &handle);
+  ASSERT_TRUE(errors::IsInvalidArgument(status)) << "Actual status: " << status;
+  // Check that the error is found by earlier in ProcessFunctionLibraryRuntime
+  // and not later in FunctionLibraryRuntime.
+  EXPECT_TRUE(absl::StrContains(
+      status.error_message(),
+      "in 'ProcessFunctionLibraryRuntime::InstantiateMultiDevice' has "
+      "TFT_TENSOR output 0 which has 0 args instead of 1"));
+}
+
 TEST_F(ProcessFunctionLibraryRuntimeTest, MultiDevice_ErrorWhenListOutput) {
   const FunctionDef& def = test::function::FuncWithListOutput();
   Init({def});
@@ -874,7 +937,7 @@ class TestFunctionPackedArgs : public FunctionArgsInterface {
   Status GetLocalArg(const FunctionArgIndex& index,
                      Tensor* val) const override {
     *val = *packed_args_.at(index.index).at(index.sub_index).tensor;
-    return Status::OK();
+    return OkStatus();
   };
 
   std::vector<Tensor> GetLocalTensors() const override { return {}; }

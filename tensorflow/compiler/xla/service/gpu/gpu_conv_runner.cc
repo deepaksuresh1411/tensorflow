@@ -22,36 +22,11 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/stream_executor_util.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/compiler/xla/stream_executor/dnn.h"
 #include "tensorflow/compiler/xla/util.h"
 
 namespace xla {
 namespace gpu {
-
-se::dnn::BatchDescriptor GetBiasDescriptor(const GpuConvConfig& config) {
-  se::dnn::BatchDescriptor result(config.output_descriptor.ndims());
-  result.set_count(1)
-      .set_height(1)
-      .set_width(1)
-      .set_feature_map_count(config.output_descriptor.feature_map_count())
-      .set_layout([&] {
-        // Normalize NCHW_VECT_C to NCHW for layout of `bias`, even though it's
-        // actually the same (because `bias` only has one dimension):  cudnn
-        // does not accept NCHW_VECT_C for `bias`.
-        se::dnn::DataLayout layout = config.output_descriptor.layout();
-        switch (layout) {
-          case se::dnn::DataLayout::kBatchDepthYX4:
-          case se::dnn::DataLayout::kBatchDepthYX32:
-            return se::dnn::DataLayout::kBatchDepthYX;
-          default:
-            return layout;
-        }
-      }());
-  if (result.ndims() == 3) {
-    result.set_spatial_dim(se::dnn::DimIndex::Z, 1);
-  }
-  return result;
-}
-
 namespace {
 
 using se::DeviceMemory;
@@ -66,40 +41,8 @@ using se::dnn::FilterDescriptor;
 using se::dnn::FilterLayout;
 using se::dnn::ProfileResult;
 
-// A StreamExecutor ScratchAllocator that wraps a single XLA allocation,
-// returning it (in its entirety) the first time Allocate() is called.
-class ScratchBufAllocator : public se::ScratchAllocator {
- public:
-  explicit ScratchBufAllocator(se::DeviceMemoryBase scratch)
-      : scratch_(scratch) {}
-
-  ~ScratchBufAllocator() override = default;
-
-  int64_t GetMemoryLimitInBytes() override { return scratch_.size(); }
-
-  se::port::StatusOr<DeviceMemory<uint8_t>> AllocateBytes(
-      int64_t byte_size) override {
-    if (allocated_) {
-      return se::port::InternalError(
-          "Can't allocate twice from a ScratchBufAllocator.");
-    }
-    if (byte_size > scratch_.size()) {
-      return se::port::InternalError(absl::StrCat(
-          "Can't allocate ", byte_size,
-          " bytes from a ScratchBufAllocator of size ", scratch_.size()));
-    }
-
-    allocated_ = true;
-    return se::DeviceMemory<uint8_t>(scratch_);
-  }
-
- private:
-  se::DeviceMemoryBase scratch_;
-  bool allocated_ = false;
-};
-
 template <typename ElementType, typename OutputType>
-Status RunGpuConvUnfused(GpuConvParams params, se::Stream* stream,
+Status RunGpuConvUnfused(const GpuConvParams& params, se::Stream* stream,
                          RunConvOptions options,
                          DeviceMemory<ElementType> input_buf,
                          DeviceMemory<ElementType> filter_buf,
@@ -124,7 +67,7 @@ Status RunGpuConvUnfused(GpuConvParams params, se::Stream* stream,
 
   se::dnn::LazyOpRunner<se::dnn::ConvOp>* lazy_runner =
       options.runner_cache->AsConvRunner();
-  absl::optional<se::dnn::LazyOpRunner<se::dnn::ConvOp>> local_runner;
+  std::optional<se::dnn::LazyOpRunner<se::dnn::ConvOp>> local_runner;
   if (!lazy_runner) {
     local_runner.emplace(params.config->algorithm);
     lazy_runner = &*local_runner;
@@ -151,8 +94,6 @@ Status RunGpuConvForwardActivation(const GpuConvParams& params,
                                    DeviceMemory<ElementType> filter_buf,
                                    DeviceMemory<OutputType> output_buf,
                                    DeviceMemoryBase scratch_memory) {
-  BatchDescriptor bias_desc = GetBiasDescriptor(*params.config);
-
   se::DeviceMemory<OutputType> side_input(params.fusion->side_input_buf);
   // If there is no side input, use output as the side input.
   if (side_input.is_null()) {
@@ -172,7 +113,7 @@ Status RunGpuConvForwardActivation(const GpuConvParams& params,
 
   se::dnn::LazyOpRunner<se::dnn::FusedConvOp>* lazy_runner =
       options.runner_cache->AsFusedConvRunner();
-  absl::optional<se::dnn::LazyOpRunner<se::dnn::FusedConvOp>> local_runner;
+  std::optional<se::dnn::LazyOpRunner<se::dnn::FusedConvOp>> local_runner;
   if (!lazy_runner) {
     local_runner.emplace(params.config->algorithm);
     lazy_runner = &*local_runner;
@@ -192,9 +133,10 @@ Status RunGpuConvForwardActivation(const GpuConvParams& params,
                                       output_type,
                                       params.config->conv_result_scale,
                                       params.config->fusion->side_input_scale,
+                                      /* leakyrelu_alpha = */ 0.0,
                                       params.config->input_descriptor,
                                       params.config->filter_descriptor,
-                                      bias_desc,
+                                      params.config->bias_descriptor,
                                       params.config->output_descriptor,
                                       params.config->conv_desc,
                                       params.config->fusion->mode};
@@ -234,7 +176,7 @@ Status RunGpuConvInternalImpl(const GpuConvParams& params, se::Stream* stream,
           scratch_memory);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Specialization for integer types.  Only two forward convolutions are allowed.
@@ -260,7 +202,7 @@ Status RunGpuConvInternalImpl(const GpuConvParams& params, se::Stream* stream,
           "Only convolution kinds kForward and kForwardActivation are "
           "supported for integer types");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename ElementType, typename BiasType, typename OutputType>
@@ -271,25 +213,24 @@ Status RunGpuConvImpl(const GpuConvParams& params, se::Stream* stream,
   auto filter_buf = se::DeviceMemory<ElementType>(params.filter_buf);
   auto output_buf = se::DeviceMemory<OutputType>(params.output_buf);
 
-  se::dnn::AlgorithmDesc algorithm = params.config->algorithm;
-  if (options.runner_cache) {
-    algorithm = options.runner_cache->ToAlgorithmDesc();
-  }
-
   Status run_status = RunGpuConvInternalImpl<ElementType, BiasType, OutputType>(
       params, stream, options, input_buf, filter_buf, output_buf,
       scratch_memory);
 
-  if (run_status != Status::OK()) {
+  if (run_status != OkStatus()) {
     return run_status;
   }
 
   if (!stream->ok()) {
+    se::dnn::AlgorithmDesc algorithm = params.config->algorithm;
+    if (options.runner_cache) {
+      algorithm = options.runner_cache->ToAlgorithmDesc();
+    }
     return InternalError(
         "Unable to launch convolution with type %s and algorithm %s",
         CudnnConvKindToString(params.config->kind), algorithm.ToString());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 int64_t GetVectCSize(DataLayout layout) {
@@ -308,6 +249,7 @@ int64_t GetVectCSize(FilterLayout layout) {
     case FilterLayout::kOutputInputYX4:
       return 4;
     case FilterLayout::kOutputInputYX32:
+    case FilterLayout::kOutputInputYX32_CudnnReordered:
       return 32;
     default:
       return 1;
@@ -377,6 +319,10 @@ StatusOr<GpuConvConfig> GetGpuConvConfig(
           << ShapeUtil::HumanStringWithLayout(config.output_shape);
   VLOG(3) << "Window: { " << window.ShortDebugString() << " }";
   VLOG(3) << "Dim nums: { " << dnums.ShortDebugString() << " }";
+  if (backend_config.reordered_int8_nchw_vect()) {
+    VLOG(3) << "Filter and bias (if present) must be reordered with "
+            << "cudnnReorderFilterAndBias";
+  }
 
   const int num_dimensions = window.dimensions_size();
   CHECK_LE(num_dimensions, 3) << inst_as_string;
@@ -420,6 +366,10 @@ StatusOr<GpuConvConfig> GetGpuConvConfig(
   TF_ASSIGN_OR_RETURN(std::tie(input_dl, filter_dl, output_dl),
                       XlaConvShapesToStreamExecutorLayouts(
                           dnums, input_shape, filter_shape, output_shape));
+  if (backend_config.reordered_int8_nchw_vect()) {
+    CHECK_EQ(filter_dl, FilterLayout::kOutputInputYX32);
+    filter_dl = FilterLayout::kOutputInputYX32_CudnnReordered;
+  }
 
   BatchDescriptor& input_descriptor = config.input_descriptor;
   input_descriptor = BatchDescriptor(effective_num_dimensions);
@@ -485,6 +435,30 @@ StatusOr<GpuConvConfig> GetGpuConvConfig(
     filter_descriptor.set_spatial_dim(static_cast<DimIndex>(dim), 1);
     config.conv_desc.set_zero_padding(static_cast<DimIndex>(dim), 0)
         .set_filter_stride(static_cast<DimIndex>(dim), 1);
+  }
+
+  // Initialize bias descriptor for fused convolutions.
+  BatchDescriptor& bias_descriptor = config.bias_descriptor;
+  bias_descriptor = BatchDescriptor(config.output_descriptor.ndims());
+  bias_descriptor.set_count(1)
+      .set_height(1)
+      .set_width(1)
+      .set_feature_map_count(config.output_descriptor.feature_map_count())
+      .set_layout([&] {
+        // Normalize NCHW_VECT_C to NCHW for layout of `bias`, even though it's
+        // actually the same (because `bias` only has one dimension):  cudnn
+        // does not accept NCHW_VECT_C for `bias`.
+        se::dnn::DataLayout layout = config.output_descriptor.layout();
+        switch (layout) {
+          case se::dnn::DataLayout::kBatchDepthYX4:
+          case se::dnn::DataLayout::kBatchDepthYX32:
+            return se::dnn::DataLayout::kBatchDepthYX;
+          default:
+            return layout;
+        }
+      }());
+  if (bias_descriptor.ndims() == 3) {
+    bias_descriptor.set_spatial_dim(se::dnn::DimIndex::Z, 1);
   }
 
   return config;

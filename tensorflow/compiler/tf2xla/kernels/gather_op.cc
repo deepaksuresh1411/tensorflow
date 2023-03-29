@@ -84,7 +84,7 @@ Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
 
     *gather_output =
         xla::Broadcast(XlaHelpers::Zero(builder, dtype), out_shape.dim_sizes());
-    return Status::OK();
+    return OkStatus();
   }
 
   for (int64_t i = 0; i < num_index_dims; ++i) {
@@ -150,7 +150,7 @@ Status XlaGather(const xla::XlaOp& input, const TensorShape& input_shape,
   }
 
   *gather_output = xla::Gather(input, indices, dim_numbers, slice_sizes);
-  return Status::OK();
+  return OkStatus();
 }
 
 Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
@@ -160,7 +160,7 @@ Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
   auto indices = context->Input(1);
   auto indices_shape = context->InputShape(1);
 
-  absl::optional<int64_t> axis;
+  std::optional<int64_t> axis;
   if (context->num_inputs() == 3) {
     const TensorShape axis_shape = context->InputShape(2);
     if (!TensorShapeUtils::IsScalar(axis_shape)) {
@@ -218,8 +218,9 @@ Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
 
   axis = axis.value_or(0);
   DataType index_type = context->input_type(1);
-  if (index_type != DT_INT32 && index_type != DT_INT64) {
-    return errors::InvalidArgument("indices must be int32 or int64");
+  if (index_type != DT_INT16 && index_type != DT_INT32 &&
+      index_type != DT_INT64) {
+    return errors::InvalidArgument("indices must be int16, int32, or int64");
   }
 
   xla::XlaOp gather;
@@ -233,7 +234,7 @@ Status XlaGatherWithBatchDimsOpImpl(XlaOpKernelContext* context,
                   /*indices_are_nd=*/false, context->expected_output_dtype(0),
                   index_type, context->builder(), gather_output));
   }
-  return Status::OK();
+  return OkStatus();
 }
 class GatherOp : public XlaOpKernel {
  public:

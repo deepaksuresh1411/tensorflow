@@ -20,16 +20,20 @@ limitations under the License.
 
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/types/span.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
+#include "tensorflow/compiler/xla/lazy.h"
 #include "tensorflow/compiler/xla/service/buffer_value.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/shape_tree.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/tsl/platform/logging.h"
 
 namespace xla {
 
@@ -58,7 +62,7 @@ struct HloPosition {
 
   template <typename H>
   friend H AbslHashValue(H h, const HloPosition& pos) {
-    return H::combine(std::move(h), *pos.instruction, pos.index);
+    return H::combine(std::move(h), pos.instruction, pos.index);
   }
 };
 
@@ -69,7 +73,7 @@ struct HloUse {
   // Instruction at which the value is used.
   HloInstruction* instruction;
 
-  // The operand number in which the value is appears.
+  // The operand number in which the value appears.
   int64_t operand_number;
 
   // The shape index within the operand in which the value appears.
@@ -145,10 +149,11 @@ class HloValue : public BufferValue {
   // overhead could be non-trivial for the first invocation. Therefore even
   // though it is marked `const`, it actually can mutate its data members. It is
   // kept this way to allow passing around const references.
-  absl::Span<const HloUse> GetUses() const {
-    return uses_.MaybeInitAndGet(
-        [this](std::vector<HloUse>& uses) { ComputeUses(uses); });
-  }
+  absl::Span<const HloUse> GetUses() const { return uses_.get(); }
+
+  // Returns true if this has a position that is the root of the given
+  // computation.
+  bool IsRootOf(const HloComputation* computation) const;
 
   // Get whether this HloValue is live out of the module.
   bool live_out_of_module() const { return live_out_of_module_; }
@@ -162,24 +167,8 @@ class HloValue : public BufferValue {
   std::string ToString() const override { return ToString(0); }
 
  private:
-  template <typename T>
-  class Lazy {
-   public:
-    Lazy() = default;
-    const T& MaybeInitAndGet(absl::FunctionRef<void(T&)> func) const {
-      if (!initialized_) {
-        func(uses_);
-        initialized_ = true;
-      }
-      return uses_;
-    }
-
-   private:
-    mutable T uses_;
-    mutable bool initialized_ = false;
-  };
   // Called when lazily computing the uses.
-  void ComputeUses(std::vector<HloUse>& uses) const;
+  std::vector<HloUse> ComputeUses() const;
 
   // The set of positions of this HloValue. The first element is always the
   // position of the definition.
@@ -210,10 +199,8 @@ class HloValueSet {
  public:
   HloValueSet() = default;
 
-  explicit HloValueSet(absl::Span<const HloValue* const> values)
-      : values_(values.begin(), values.end()) {
-    SortAndUniquifyValues();
-  }
+  explicit HloValueSet(absl::Span<const HloValue* const> values);
+  explicit HloValueSet(const absl::flat_hash_set<const HloValue*>& values);
 
   // Sets this value set to the union of the given value sets. Returns whether
   // this value set changed.
@@ -229,6 +216,8 @@ class HloValueSet {
 
   // Clear all values from the set.
   void Clear() { values_.clear(); }
+
+  std::vector<const HloValue*> TakeValues() { return std::move(values_); }
 
   // Return the unique HLO value in the set. CHECKs if the set does not contain
   // exactly one value.
@@ -273,6 +262,11 @@ class InstructionValueSet : public ShapeTree<HloValueSet> {
   // Sets this value set to the union of the given value sets. Returns whether
   // this value set changed.
   bool AssignUnionOf(absl::Span<const InstructionValueSet* const> inputs);
+
+  // Sets this value set to the input value set at the given index. Returns
+  // whether this value set changed.
+  bool AssignUnionOf(const InstructionValueSet& input,
+                     ShapeIndexView input_index);
 
   // Returns true if any value sets for any subshape element is not a
   // singleton.

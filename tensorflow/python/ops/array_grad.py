@@ -16,7 +16,6 @@
 
 from tensorflow.compiler.tf2xla.ops import gen_xla_ops
 from tensorflow.python import pywrap_tfe
-from tensorflow.python.client import pywrap_tf_session
 from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -26,7 +25,8 @@ from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import array_ops_stack
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import control_flow_util
 from tensorflow.python.ops import gen_array_ops
 from tensorflow.python.ops import gen_math_ops
@@ -38,13 +38,14 @@ from tensorflow.python.ops import sparse_ops
 @ops.RegisterGradient("Pack")
 def _PackGrad(op, grad):
   """Gradient for pack op."""
-  return array_ops.unstack(grad, num=op.get_attr("N"), axis=op.get_attr("axis"))
+  return array_ops_stack.unstack(
+      grad, num=op.get_attr("N"), axis=op.get_attr("axis"))
 
 
 @ops.RegisterGradient("Unpack")
 def _UnpackGrad(op, *grads):
   """Gradient for unpack op."""
-  return array_ops.stack(grads, axis=op.get_attr("axis"))
+  return array_ops_stack.stack(grads, axis=op.get_attr("axis"))
 
 
 def _ConcatGradHelper(op, grad, start_value_index, end_value_index, dim_index):
@@ -146,7 +147,7 @@ def _ConcatGradHelper(op, grad, start_value_index, end_value_index, dim_index):
         # extract the size of each input along the concat dimension
         sizes = array_ops.squeeze(
             array_ops.slice(
-                array_ops.stack(sizes, axis=1), [non_neg_concat_dim, 0],
+                array_ops_stack.stack(sizes, axis=1), [non_neg_concat_dim, 0],
                 [1, -1]))
         out_grads = array_ops.split(grad, sizes, non_neg_concat_dim)
       else:
@@ -247,15 +248,17 @@ def _SliceGrad(op, grad):
   input_vec = op.inputs[0]
   begin_vec = op.inputs[1]
   input_rank = array_ops.rank(input_vec)
-  slice_size = array_ops.shape(op.outputs[0])
+  index_dtype = begin_vec.dtype
+  slice_size = array_ops.shape(op.outputs[0], out_type=index_dtype)
   if control_flow_util.GraphOrParentsInXlaContext(ops.get_default_graph()):
     return gen_xla_ops.xla_dynamic_update_slice(array_ops.zeros_like(input_vec),
                                                 grad, begin_vec), None, None
 
-  shape = array_ops.stack([input_rank, 1])
+  shape = array_ops_stack.stack([input_rank, 1])
   before_pad = array_ops.reshape(begin_vec, shape)
   after_pad = array_ops.reshape(
-      array_ops.shape(input_vec) - slice_size - begin_vec, shape)
+      array_ops.shape(input_vec, out_type=index_dtype) - slice_size - begin_vec,
+      shape)
   paddings = array_ops.concat([before_pad, after_pad], 1)
   return array_ops.pad(grad, paddings), None, None
 
@@ -335,6 +338,17 @@ def _TensorStridedSliceUpdateGrad(op, grad):  # pylint:disable=missing-function-
              grad, begin, end, strides)
   dx = Apply(array_ops.tensor_strided_slice_update,
              grad, begin, end, strides, array_ops.zeros_like(dy))
+
+  # The value is potentially broadcast to the shape of the strided slice, so we
+  # may need to adjust dy.
+  slice_shape = array_ops.shape(dy, out_type=begin.dtype)
+  value_shape = array_ops.shape(op.inputs[4], out_type=slice_shape.dtype)
+
+  _, reduction_axes = gen_array_ops.broadcast_gradient_args(
+      slice_shape, value_shape)
+  dy_reshaped = math_ops.reduce_sum(dy, axis=reduction_axes, keepdims=True)
+  dy = array_ops.reshape(dy_reshaped, value_shape)
+
   return dx, None, None, None, dy
 
 
@@ -460,16 +474,16 @@ def _MatrixSetDiagGradV2(op, grad):
     diag_index = array_ops.reshape(op.inputs[2], [-1])  # Converts to vector.
     d_lower = diag_index[0]
     d_upper = diag_index[-1]  # Works both when len(diag_index) is 1 and 2.
-    y_offset = control_flow_ops.cond(
+    y_offset = cond.cond(
         math_ops.less(d_upper, 0), lambda: d_upper, lambda: 0)
-    x_offset = control_flow_ops.cond(
+    x_offset = cond.cond(
         math_ops.greater(d_lower, 0), lambda: -d_lower, lambda: 0)
 
     max_diag_len = math_ops.minimum(matrix_shape[0] + y_offset,
                                     matrix_shape[1] + x_offset)
     # pylint: disable=g-long-lambda
     # pyformat: disable
-    postfix = control_flow_ops.cond(
+    postfix = cond.cond(
         math_ops.equal(d_lower, d_upper),
         lambda: ops.convert_to_tensor([max_diag_len]),
         lambda: ops.convert_to_tensor([d_upper - d_lower + 1,
@@ -497,16 +511,16 @@ def _MatrixSetDiagGradV3(op, grad):
     diag_index = array_ops.reshape(op.inputs[2], [-1])  # Converts to vector.
     d_lower = diag_index[0]
     d_upper = diag_index[-1]  # Works both when len(diag_index) is 1 and 2.
-    y_offset = control_flow_ops.cond(
+    y_offset = cond.cond(
         math_ops.less(d_upper, 0), lambda: d_upper, lambda: 0)
-    x_offset = control_flow_ops.cond(
+    x_offset = cond.cond(
         math_ops.greater(d_lower, 0), lambda: -d_lower, lambda: 0)
 
     max_diag_len = math_ops.minimum(matrix_shape[0] + y_offset,
                                     matrix_shape[1] + x_offset)
     # pylint: disable=g-long-lambda
     # pyformat: disable
-    postfix = control_flow_ops.cond(
+    postfix = cond.cond(
         math_ops.equal(d_lower, d_upper),
         lambda: ops.convert_to_tensor([max_diag_len]),
         lambda: ops.convert_to_tensor([d_upper - d_lower + 1,
@@ -852,7 +866,8 @@ def _TileGrad(op, grad):
   #   split_shape = [2, 20, 3, 30, 4, 40]
   #   axes = [0, 2, 4]
   split_shape = array_ops.reshape(
-      array_ops.transpose(array_ops.stack([op.inputs[1], input_shape])), [-1])
+      array_ops.transpose(array_ops_stack.stack([op.inputs[1], input_shape])),
+      [-1])
   axes = math_ops.range(0, array_ops.size(split_shape), 2)
   # Sum reduces grad along the first dimension for IndexedSlices
   if isinstance(grad, indexed_slices_lib.IndexedSlices):
@@ -878,7 +893,7 @@ def _PadGrad(op, grad):
   a = op.inputs[1]  # [Rank(x), 2]
   # Takes a slice of a. The 1st column. [Rank(x), 1].
   pad_before = array_ops.slice(a, [0, 0],
-                               array_ops.stack([array_ops.rank(x), 1]))
+                               array_ops_stack.stack([array_ops.rank(x), 1]))
   # Make it a 1-D tensor.
   begin = array_ops.reshape(pad_before, [-1])
   sizes = array_ops.shape(x, out_type=begin.dtype)
@@ -1159,8 +1174,8 @@ def _TensorScatterMinOrMaxGrad(op, grad):
   x_indicators = math_ops.cast(math_ops.equal(x, output), grad.dtype)
   y_output = array_ops.gather_nd(output, indices)
   y_indicators = math_ops.cast(math_ops.equal(y, y_output), grad.dtype)
-  ys_indicators = array_ops.scatter_nd(indices, y_indicators,
-                                       array_ops.shape(x))
+  ys_indicators = array_ops.scatter_nd(
+      indices, y_indicators, array_ops.shape(x, out_type=indices.dtype))
   indicators = x_indicators + ys_indicators  # All elements are >= 1.
   # If there are multiple minimum or maximum elements then the gradient will be
   # divided between them.
@@ -1207,8 +1222,7 @@ def _BroadcastToGrad(op, grad):
   input_value_shape = array_ops.shape(input_value, out_type=shape_dtype)
   if not isinstance(broadcast_shape, ops.EagerTensor):
     broadcast_shape_static = tensor_shape.TensorShape(
-        pywrap_tf_session.TF_TryEvaluateConstant_wrapper(
-            broadcast_shape.graph._c_graph, broadcast_shape._as_tf_output()))  # pylint: disable=protected-access
+        tensor_util.try_evaluate_constant(broadcast_shape))
     if broadcast_shape_static.is_fully_defined():
       broadcast_shape = constant_op.constant(
           broadcast_shape_static.as_list(), dtype=shape_dtype)

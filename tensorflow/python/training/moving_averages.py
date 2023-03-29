@@ -279,7 +279,7 @@ def _zero_debias(strategy, unbiased_var, value, decay):
 
 
 @tf_export("train.ExponentialMovingAverage")
-class ExponentialMovingAverage(object):
+class ExponentialMovingAverage:
   """Maintains moving averages of variables by employing an exponential decay.
 
   When training a model, it is often beneficial to maintain moving averages of
@@ -550,7 +550,10 @@ class ExponentialMovingAverage(object):
         with ops.init_scope():
           if isinstance(var, variables.Variable):
             with ops.device(var.device):
-              initialized_value = var.initialized_value()
+              initialized_value = control_flow_ops.cond(
+                  variables.is_variable_initialized(var),
+                  var.read_value,
+                  lambda: var.initial_value)  # pylint: disable=cell-var-from-loop
             avg = slot_creator.create_slot(
                 var,
                 initialized_value,

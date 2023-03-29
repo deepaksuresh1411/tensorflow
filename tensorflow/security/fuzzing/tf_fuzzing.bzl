@@ -19,6 +19,34 @@
 # mutators to do structure aware fuzzing) or any other type of content that is
 # not classified elsewhere.
 
+# tf_cc_fuzz_test is a cc_test modified to include fuzzing support and dependencies for go/fuzztest.
+def tf_cc_fuzz_test(
+        name,
+        fuzzing_dict = [],
+        corpus = [],
+        parsers = [],
+        componentid = None,
+        hotlists = [],
+        data = [],
+        deps = [],
+        tags = [],
+        **kwargs):
+    tf_fuzz_target(
+        name = name,
+        fuzzing_dict = fuzzing_dict,
+        corpus = corpus,
+        parsers = parsers,
+        componentid = componentid,
+        hotlists = hotlists,
+        data = data,
+        deps = deps + [
+            "@com_google_fuzztest//fuzztest",
+            "@com_google_fuzztest//fuzztest:fuzztest_gtest_main",
+        ],
+        tags = tags,
+        **kwargs
+    )
+
 # tf_cc_fuzz_target is a cc_test modified to include fuzzing support.
 def tf_fuzz_target(
         name,
@@ -73,9 +101,9 @@ def tf_fuzz_target(
     # Now, redirect to cc_test
     native.cc_test(
         name = name,
-        deps = deps,  # TODO(mihaimaruseac): fuzzing lib?
-        data = data,  # TODO(mihaimaruseac): dict, corpus, parsers??
-        tags = tags,  # TODO(mihaimaruseac): fuzzing tags?
+        deps = deps,
+        data = data,
+        tags = tags,
         linkstatic = 1,
         **kwargs
     )

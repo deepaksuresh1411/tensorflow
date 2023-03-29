@@ -12,6 +12,14 @@ tf_class {
     mtype: "<type \'property\'>"
   }
   member {
+    name: "filter_parallelization"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "inject_prefetch"
+    mtype: "<type \'property\'>"
+  }
+  member {
     name: "map_and_batch_fusion"
     mtype: "<type \'property\'>"
   }
@@ -37,6 +45,10 @@ tf_class {
   }
   member {
     name: "shuffle_and_repeat_fusion"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "warm_start"
     mtype: "<type \'property\'>"
   }
   member_method {

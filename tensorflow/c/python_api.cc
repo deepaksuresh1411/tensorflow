@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/c/python_api.h"
 
 #include "tensorflow/c/c_api_internal.h"
+#include "tensorflow/core/framework/full_type.pb.h"
 #include "tensorflow/python/framework/cpp_shape_inference.pb.h"
 
 namespace tensorflow {
@@ -43,10 +44,16 @@ void SetAttr(TF_Graph* graph, TF_Operation* op, const char* attr_name,
 
 void ClearAttr(TF_Graph* graph, TF_Operation* op, const char* attr_name,
                TF_Status* status) {
-
   mutex_lock l(graph->mu);
   op->node.ClearAttr(attr_name);
   RecordMutation(graph, *op, "clearing attribute");
+}
+
+void SetFullType(TF_Graph* graph, TF_Operation* op,
+                 const FullTypeDef& full_type) {
+  mutex_lock l(graph->mu);
+  *op->node.mutable_def()->mutable_experimental_type() = full_type;
+  RecordMutation(graph, *op, "setting fulltype");
 }
 
 void SetRequestedDevice(TF_Graph* graph, TF_Operation* op, const char* device) {
@@ -58,23 +65,6 @@ void SetRequestedDevice(TF_Graph* graph, TF_Operation* op, const char* device) {
 void UpdateEdge(TF_Graph* graph, TF_Output new_src, TF_Input dst,
                 TF_Status* status) {
   TF_UpdateEdge(graph, new_src, dst, status);
-}
-
-void RemoveAllControlInputs(TF_Graph* graph, TF_Operation* op) {
-  mutex_lock l(graph->mu);
-  std::vector<const Edge*> control_edges;
-  for (const Edge* edge : op->node.in_edges()) {
-    if (!edge->IsControlEdge()) continue;
-    control_edges.push_back(edge);
-  }
-  for (const Edge* edge : control_edges) {
-    graph->graph.RemoveControlEdge(edge);
-  }
-}
-
-void SetRequireShapeInferenceFns(TF_Graph* graph, bool require) {
-  mutex_lock l(graph->mu);
-  graph->refiner.set_require_shape_inference_fns(require);
 }
 
 void ExtendSession(TF_Session* session, TF_Status* status) {

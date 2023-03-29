@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TOSA_TFL_PASSES_H_
 #define TENSORFLOW_COMPILER_MLIR_TOSA_TFL_PASSES_H_
 
+#include <optional>
 #include <string>
 
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
@@ -28,9 +29,10 @@ struct TOSATFLLegalizationPipelineOptions
     : public PassPipelineOptions<TOSATFLLegalizationPipelineOptions> {
   ArrayRef<std::string> disabled_patterns;
   ArrayRef<std::string> enabled_patterns;
+  bool dequantize_tfl_softmax = false;
   TOSATFLLegalizationPipelineOptions() {
-    disabled_patterns = llvm::None;
-    enabled_patterns = llvm::None;
+    disabled_patterns = std::nullopt;
+    enabled_patterns = std::nullopt;
   }
 };
 

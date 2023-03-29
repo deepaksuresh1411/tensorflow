@@ -56,6 +56,7 @@ const char* const kTPUReplicatedInput = "TPUReplicatedInput";
 const char* const kTPUReplicatedOutput = "TPUReplicatedOutput";
 const char* const kPivotForClusterAttr = "_pivot_for_cluster";
 const char* const kTPUPartitionedInput = "TPUPartitionedInput";
+const char* const kTPUPartitionedInputV2 = "TPUPartitionedInputV2";
 
 // Finds the `index` of an _Arg or _Retval node.
 Status GetIndexAttr(const Node& n, int num_args, int* index) {
@@ -64,7 +65,7 @@ Status GetIndexAttr(const Node& n, int num_args, int* index) {
     return errors::InvalidArgument("Invalid ", n.type_string(), " number ",
                                    *index);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Rewrite function to be passed to EncapsulateSubgraphsInFunctions that sorts
@@ -95,21 +96,6 @@ Status RewriteSubgraph(const std::vector<OutputTensor>& arg_source_tensors,
       }
     }
     return ret;
-  };
-
-  auto get_replicated_input_index = [&](const Node& n) {
-    CHECK_EQ("_Arg", n.type_string());
-    int index;
-    TF_CHECK_OK(GetIndexAttr(n, arg_source_tensors.size(), &index));
-    if (arg_source_tensors.at(index).node->type_string() !=
-        kTPUReplicatedInput) {
-      return -1;
-    }
-    int replicated_index;
-    TF_CHECK_OK(GetNodeAttr(arg_source_tensors.at(index).node->attrs(), "index",
-                            &replicated_index));
-
-    return replicated_index;
   };
 
   auto is_guaranteed_constant = [&](const Node& n) {
@@ -193,8 +179,6 @@ Status RewriteSubgraph(const std::vector<OutputTensor>& arg_source_tensors,
     // Replicated values appear before non-replicated values.
     bool a_not_replicated = !is_replicated_input(*a, &a_is_packed);
     bool b_not_replicated = !is_replicated_input(*b, &b_is_packed);
-    int a_replicated_index = get_replicated_input_index(*a);
-    int b_replicated_index = get_replicated_input_index(*b);
     // Non-resources appear before resources
     bool a_is_resource = (a->output_type(0) == DT_RESOURCE);
     bool b_is_resource = (b->output_type(0) == DT_RESOURCE);
@@ -202,9 +186,9 @@ Status RewriteSubgraph(const std::vector<OutputTensor>& arg_source_tensors,
     StringPiece a_name(a->name());
     StringPiece b_name(b->name());
     return std::tie(a_is_guaranteed_constant, a_not_replicated, a_is_packed,
-                    a_is_resource, a_replicated_index, a_name) <
+                    a_is_resource, a_name) <
            std::tie(b_is_guaranteed_constant, b_not_replicated, b_is_packed,
-                    b_is_resource, b_replicated_index, b_name);
+                    b_is_resource, b_name);
   });
   // Sorts the retvals by name so the order is deterministic.
   std::sort(retvals.begin(), retvals.end(),
@@ -253,7 +237,7 @@ Status RewriteSubgraph(const std::vector<OutputTensor>& arg_source_tensors,
       TpuCompileInterface::Get()->FingerprintString(serialized);
   LOG(INFO) << "Subgraph fingerprint:" << fingerprint;
   call_def->set_op(strings::StrCat(call_def->op(), "_", fingerprint));
-  return Status::OK();
+  return OkStatus();
 }
 
 DataType EdgeType(const Edge* edge) {
@@ -315,7 +299,7 @@ Status RemoveIdentityNodesForArgRetval(Graph* g) {
     g->RemoveNode(n);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Updates the TPUREPLICATE_MIRRORED_VAR_INDICES_ATTR when
@@ -337,7 +321,7 @@ Status UpdateMirroredVariableIndices(int additional_per_replica_inputs,
     xla_node->AddAttr(TPUREPLICATE_MIRRORED_VAR_INDICES_ATTR,
                       mirrored_variable_indices);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Move outside compilation nodes at the beginning of XLA computation to host.
@@ -738,7 +722,7 @@ Status MoveHeadOutsideCompilationToHost(
           << DumpGraphToFile(absl::StrCat("move_head_oc_xla_", xla_func_name),
                              *xla_graph);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // If there are any unused _Arg nodes in `xla_graph`, remove them from
@@ -973,7 +957,7 @@ Status RemoveUnusedXlaInput(const string& xla_func_name, Graph* g,
                  absl::StrCat("remove_unused_input_xla_", xla_func_name),
                  *xla_graph);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Move outside compilation nodes at the end of XLA computation to host.
@@ -1214,7 +1198,7 @@ Status MoveTailOutsideCompilationToHost(
           << DumpGraphToFile(absl::StrCat("move_tail_oc_xla_", xla_func_name),
                              *xla_graph);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ReplaceArgUsedByOutsideCompilationWithPlaceholder(
@@ -1335,7 +1319,7 @@ Status ReplaceArgUsedByOutsideCompilationWithPlaceholder(
           << DumpGraphToFile(
                  absl::StrCat("replace_oc_only_arg_xla_", xla_func_name),
                  *xla_graph);
-  return Status::OK();
+  return OkStatus();
 }
 
 // If there are any unused _Retval nodes in `xla_graph` (whose input is a
@@ -1446,7 +1430,7 @@ Status RemoveUnusedXlaOutput(const string& xla_func_name, Graph* g,
                  absl::StrCat("remove_unused_output_xla_", xla_func_name),
                  *xla_graph);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // For data edges between _Arg and _Retval in `xla_graph`, remove them and
@@ -1546,7 +1530,7 @@ Status RemoveEdgesBetweenArgAndRetval(const string& xla_func_name, Graph* g,
                  absl::StrCat("remove_unused_arg_ret_xla_", xla_func_name),
                  *xla_graph);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Remove any TPUReplicatedInput nodes with no output edges. Those nodes are
@@ -1567,7 +1551,8 @@ void RemoveUnusedTPUReplicatedInputs(Graph* graph) {
         std::vector<Node*> to_be_removed_src_nodes;
         for (const auto& e_in : n->in_edges()) {
           if (!e_in->IsControlEdge() &&
-              e_in->src()->type_string() == kTPUPartitionedInput)
+              (e_in->src()->type_string() == kTPUPartitionedInput ||
+               e_in->src()->type_string() == kTPUPartitionedInputV2))
             to_be_removed_src_nodes.push_back(e_in->src());
         }
         graph->RemoveNode(n);
@@ -1648,7 +1633,7 @@ Status RenameClustersWithDuplicatedNames(Graph* g) {
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Instantiate a function that is associated with a functional control flow
@@ -1873,7 +1858,7 @@ Status LiftOutsideCompilationOnlyArgsAndReplaceFunctionDef(
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status MakeIdentityNodesForArgsToLift(
@@ -1906,7 +1891,7 @@ Status MakeIdentityNodesForArgsToLift(
     g->AddControlEdge(id_node, n);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Replaces all usages of lifted args with placeholder nodes. Afterwards,
@@ -1962,7 +1947,7 @@ Status RemoveArgsToLiftFromFunctionBody(
     fbody->graph->RemoveNode(arg_node);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status CleanUpInEdges(const absl::flat_hash_map<int, int>& index_mapping,
@@ -1989,24 +1974,7 @@ Status CleanUpInEdges(const absl::flat_hash_map<int, int>& index_mapping,
     g->RemoveEdge(e);
   }
 
-  return Status::OK();
-}
-
-Status UpdateTypeAttribute(const absl::flat_hash_map<int, int>& index_mapping,
-                           const string& type_attr_name,
-                           const std::vector<DataType>& dtypes, Node* n) {
-  std::vector<DataType> new_dtypes;
-  new_dtypes.reserve(index_mapping.size());
-  for (int i = 0; i < dtypes.size(); ++i) {
-    if (index_mapping.contains(i)) {
-      new_dtypes.emplace_back(dtypes[i]);
-    }
-  }
-
-  n->ClearAttr(type_attr_name);
-  n->AddAttr(type_attr_name, new_dtypes);
-
-  return Status::OK();
+  return OkStatus();
 }
 
 // While V2 always creates Identity node for each While node output, which is
@@ -2055,7 +2023,7 @@ Status ReplaceOutputEdgesWithInputEdgeSourceForWhile(
     g->AddEdge(input_edge->src(), input_edge->src_output(), dst, dst_input);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Calculates mapping from argument index before lifting to index afterwards.
@@ -2098,7 +2066,7 @@ Status LiftOutsideCompilationOnlyArgsFromWhileNode(
 
   TF_ASSIGN_OR_RETURN(absl::flat_hash_set<int> args_to_lift,
                       FindArgsToLiftForWhileNode(while_node, fld));
-  if (args_to_lift.empty()) return Status::OK();
+  if (args_to_lift.empty()) return OkStatus();
 
   RemoveOutputIdentityNodesForWhileV2(g, while_node);
 
@@ -2155,12 +2123,14 @@ Status LiftOutsideCompilationOnlyArgsFromWhileNode(
   TF_RETURN_IF_ERROR(CleanUpInEdges(
       index_mapping, /*arg_to_input_edge_offset=*/0, g, while_node));
 
-  TF_RETURN_IF_ERROR(
-      UpdateTypeAttribute(index_mapping, "T", dtypes, while_node));
+  // Changing T affects the node's outputs, so full type information (if
+  // present) must be updated.
+  TF_RETURN_IF_ERROR(while_node->ShrinkTypeInfo(index_mapping, "T",
+                                                /*update_full_type=*/true));
 
   *rewritten = true;
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status LiftOutsideCompilationOnlyArgsFromIfNode(Graph* g, Node* if_node,
@@ -2170,7 +2140,7 @@ Status LiftOutsideCompilationOnlyArgsFromIfNode(Graph* g, Node* if_node,
   *rewritten = false;
   TF_ASSIGN_OR_RETURN(absl::flat_hash_set<int> args_to_lift,
                       FindArgsToLiftForIfNode(*if_node, fld));
-  if (args_to_lift.empty()) return Status::OK();
+  if (args_to_lift.empty()) return OkStatus();
 
   std::vector<DataType> dtypes;
   TF_RETURN_IF_ERROR(GetNodeAttr(if_node->def(), "Tin", &dtypes));
@@ -2225,12 +2195,14 @@ Status LiftOutsideCompilationOnlyArgsFromIfNode(Graph* g, Node* if_node,
   // If node.
   TF_RETURN_IF_ERROR(CleanUpInEdges(
       index_mapping, /*arg_to_input_edge_offset=*/1, g, if_node));
-  TF_RETURN_IF_ERROR(
-      UpdateTypeAttribute(index_mapping, "Tin", dtypes, if_node));
+  // Changing Tin does not affect the node's outputs, so full type information
+  // (if present) does not need to be updated.
+  TF_RETURN_IF_ERROR(if_node->ShrinkTypeInfo(index_mapping, "Tin",
+                                             /*update_full_type=*/false));
 
   *rewritten = true;
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status LiftOutsideCompilationOnlyArgsFromCallNode(
@@ -2261,7 +2233,7 @@ Status LiftOutsideCompilationOnlyArgsFromCallNode(
   // Find _Arg nodes to lift.
   TF_ASSIGN_OR_RETURN(absl::flat_hash_set<int> args_to_lift,
                       FindArgsToLiftForCallNode(call_node, *fbody));
-  if (args_to_lift.empty()) return Status::OK();
+  if (args_to_lift.empty()) return OkStatus();
 
   std::vector<DataType> dtypes;
   dtypes = std::vector<DataType>(call_node->input_types().begin(),
@@ -2316,7 +2288,7 @@ Status LiftOutsideCompilationOnlyArgsFromCallNode(
 
   *rewritten = true;
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Lifts outside compilation only _Arg nodes out of If/While/function nodes.
@@ -2466,7 +2438,7 @@ Status LiftOutsideCompilationOnlyArgs(Graph* g, FunctionLibraryRuntime* flr,
     VLOG(4) << DumpGraphToFile("after_lifting_args", *g, fld);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -2506,7 +2478,7 @@ Status LiftOutsideCompilationOnlyArgs(Graph* g, FunctionLibraryRuntime* flr,
       "EncapsulateTPUComputationsPass failed");
   graph->swap(output);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 /*static*/ Status EncapsulateTPUComputationsPass::BuildTPUReplicateOps(
@@ -2823,7 +2795,7 @@ Status LiftOutsideCompilationOnlyArgs(Graph* g, FunctionLibraryRuntime* flr,
       graph->AddControlEdge(tpu_replicate, n);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status EncapsulateTPUComputationsPass::Run(
@@ -2841,7 +2813,7 @@ Status EncapsulateTPUComputationsPass::Run(
   VLOG(1) << "EncapsulateTPUComputations() finished: "
           << DumpGraphToFile("encapsulate_tpu_computations_after",
                              **options.graph, options.flib_def);
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ExtractOutsideCompilationPass::ProcessHeadTailOutsideCompilation(
@@ -2919,7 +2891,7 @@ Status ExtractOutsideCompilationPass::ProcessHeadTailOutsideCompilation(
     FixupSourceAndSinkEdges(g);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ExtractOutsideCompilationPass::Run(
@@ -2975,7 +2947,7 @@ Status ExtractOutsideCompilationPass::Run(
         PruneUnreachableFunctionsFromGraph(**options.graph, options.flib_def));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

@@ -20,15 +20,13 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/framework/resource_handle.h"
-#include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/util/managed_stack_trace.h"
+#include "tensorflow/tsl/lib/core/status_test_util.h"
 
 namespace tensorflow {
 namespace checkpoint {
@@ -103,11 +101,11 @@ TEST_F(CheckpointCallbackManagerTest, RegisterSaveCallbackTwice) {
 TEST_F(CheckpointCallbackManagerTest, RegisterRestoreCallbackTwice) {
   RestoreCallback first_callback = [](absl::string_view checkpoint_id,
                                       absl::string_view str) {
-    return Status::OK();
+    return OkStatus();
   };
   RestoreCallback second_callback = [](absl::string_view checkpoint_id,
                                        absl::string_view str) {
-    return Status::OK();
+    return OkStatus();
   };
 
   TF_ASSERT_OK(checkpoint_callback_manager_->RegisterRestoreCallback(
@@ -142,11 +140,11 @@ TEST_F(CheckpointCallbackManagerTest, DoesSaveCallbackExist) {
 TEST_F(CheckpointCallbackManagerTest, DoesRestoreCallbackExist) {
   RestoreCallback first_callback = [](absl::string_view checkpoint_id,
                                       absl::string_view str) {
-    return Status::OK();
+    return OkStatus();
   };
   RestoreCallback second_callback = [](absl::string_view checkpoint_id,
                                        absl::string_view str) {
-    return Status::OK();
+    return OkStatus();
   };
 
   TF_ASSERT_OK(checkpoint_callback_manager_->RegisterRestoreCallback(
@@ -227,7 +225,7 @@ TEST_F(CheckpointCallbackManagerTest, Restore) {
     EXPECT_EQ(checkpoint_id, "model.ckpt-100");
     EXPECT_EQ(str, "Apple");
     ++callback_call_count;
-    return Status::OK();
+    return OkStatus();
   };
 
   TF_ASSERT_OK(checkpoint_callback_manager_->RegisterRestoreCallback(
@@ -242,9 +240,10 @@ TEST_F(CheckpointCallbackManagerTest, Restore) {
       io::JoinPath(testing::TmpDir(), "model.ckpt-100"));
   EXPECT_EQ(callback_call_count, 1);
 
+  // Repeated call should not be triggered.
   checkpoint_callback_manager_->Restore(
       io::JoinPath(testing::TmpDir(), "model.ckpt-100"));
-  EXPECT_EQ(callback_call_count, 2);
+  EXPECT_EQ(callback_call_count, 1);
 }
 
 TEST_F(CheckpointCallbackManagerTest, SaveAndRestore) {
@@ -262,7 +261,7 @@ TEST_F(CheckpointCallbackManagerTest, SaveAndRestore) {
     EXPECT_EQ(checkpoint_id, "model.ckpt-500");
     EXPECT_EQ(str, "Apple");
     ++restore_callback_count;
-    return Status::OK();
+    return OkStatus();
   };
 
   TF_ASSERT_OK(checkpoint_callback_manager_->RegisterRestoreCallback(
@@ -303,7 +302,7 @@ TEST_F(CheckpointCallbackManagerTest, RestoreLazyCallback) {
     EXPECT_EQ(checkpoint_id, "model.ckpt-100");
     EXPECT_EQ(str, "Apple");
     ++callback_call_count;
-    return Status::OK();
+    return OkStatus();
   };
 
   TF_EXPECT_OK(WriteStringToFile(

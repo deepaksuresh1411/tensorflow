@@ -17,15 +17,18 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_XLA_SERVICE_MEMORY_SPACE_ASSIGNMENT_H_
 
 #include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <utility>
 
 // TODO(b/210891274): Use btree_map after build issue in Windows is resolved.
 #if defined(__GNUC__) || defined(__clang__)
 #include "absl/container/btree_map.h"
-#else
-#include <map>
 #endif
+#include "absl/functional/function_ref.h"
 #include "tensorflow/compiler/xla/service/heap_simulator.h"
 #include "tensorflow/compiler/xla/service/hlo_cost_analysis.h"
 #include "tensorflow/compiler/xla/service/memory_space_assignment_repacking.h"
@@ -110,13 +113,14 @@ class MemorySpaceAssignmentCostAnalysis {
   // speed up the lookup.
   struct Cache {
     absl::flat_hash_map<const HloInstruction*, float> while_nest_multiplier;
+    absl::flat_hash_map<HloPosition, float> memory_boundedness;
   };
 
   // Function type that can be used to indicate which input/output values are in
   // the alternate memory.
-  using IsInAlternateMemoryFun =
-      std::function<bool(absl::optional<int> /*operand_num*/,
-                         const ShapeIndex& /*index*/, const Shape& /*shape*/)>;
+  using IsInAlternateMemoryFun = absl::FunctionRef<bool(
+      std::optional<int> /*operand_num*/, const ShapeIndex& /*index*/,
+      const Shape& /*shape*/)>;
 
   virtual ~MemorySpaceAssignmentCostAnalysis() = default;
 
@@ -274,8 +278,8 @@ class PrefetchIntervalPicker {
                                           int64_t end_time) const = 0;
 
   // Begins the iterator for the first start time of the prefetch.
-  virtual void Begin(const HloUse& use, int64_t start_time,
-                     int64_t end_time) = 0;
+  virtual void Begin(const HloUse& use, int64_t start_time, int64_t end_time,
+                     std::optional<int64_t> preferred_time) = 0;
 
   // Advances the start time of the prefetch and returns that value.
   virtual int64_t Next() = 0;
@@ -305,10 +309,10 @@ class PrefetchIntervalPicker {
   // Prefetch interval pickers may return a value corresponding to the benefit
   // of placing the BufferInterval in the alternate memory. The larger value,
   // the more beneficial.
-  virtual absl::optional<float> BufferIntervalAlternateMemoryBenefit(
+  virtual std::optional<float> BufferIntervalAlternateMemoryBenefit(
       const GlobalDecreasingSizeBestFitHeap<HloValue>::BufferInterval& interval)
       const {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
  protected:
@@ -356,7 +360,8 @@ class InstructionCountPrefetchIntervalPicker : public PrefetchIntervalPicker {
   float GetLogicalIntervalElapsed(int64_t start_time,
                                   int64_t end_time) const override;
 
-  void Begin(const HloUse& use, int64_t start_time, int64_t end_time) override;
+  void Begin(const HloUse& use, int64_t start_time, int64_t end_time,
+             std::optional<int64_t> preferred_time) override;
 
   int64_t Next() override;
   bool Done() const override;
@@ -387,14 +392,17 @@ class MemorySpaceAssignmentCostAnalysis;
 // The value for buffer size for max async copy is a mechanism to prevent
 // copying small buffers between the two memories unnecessarily. For calculating
 // the max time that the buffer can reside in alternate memory, we use the
-// larger of this value and the actual size of the buffer.
+// larger of this value and the actual size of the buffer. A shape override can
+// also be provided which causes the interval picker to use that shape for async
+// copy durations instead of the actual shape of the copy.
 class CostAnalysisPrefetchIntervalPicker : public PrefetchIntervalPicker {
  public:
   CostAnalysisPrefetchIntervalPicker(
       const MemorySpaceAssignmentCostAnalysis& cost_analysis,
       float min_overlap_to_async_copy_ratio,
       float preferred_overlap_to_async_copy_ratio,
-      float max_overlap_to_mem_size_async_copy_ratio, int64_t mem_size_bytes);
+      float max_overlap_to_mem_size_async_copy_ratio, int64_t mem_size_bytes,
+      const Shape* shape_override = nullptr);
 
   bool CanAllocateInAlternateMemoryNoCopy(const Shape& shape,
                                           int64_t start_time,
@@ -421,7 +429,8 @@ class CostAnalysisPrefetchIntervalPicker : public PrefetchIntervalPicker {
   float GetLogicalIntervalElapsed(int64_t start_time,
                                   int64_t end_time) const override;
 
-  void Begin(const HloUse& use, int64_t start_time, int64_t end_time) override;
+  void Begin(const HloUse& use, int64_t start_time, int64_t end_time,
+             std::optional<int64_t> preferred_time) override;
 
   int64_t Next() override;
   bool Done() const override;
@@ -434,7 +443,7 @@ class CostAnalysisPrefetchIntervalPicker : public PrefetchIntervalPicker {
   std::string ToNoCopyDebugString(const Shape& shape, int64_t start_time,
                                   int64_t end_time) const override;
 
-  absl::optional<float> BufferIntervalAlternateMemoryBenefit(
+  std::optional<float> BufferIntervalAlternateMemoryBenefit(
       const GlobalDecreasingSizeBestFitHeap<HloValue>::BufferInterval& interval)
       const override;
 
@@ -472,6 +481,10 @@ class CostAnalysisPrefetchIntervalPicker : public PrefetchIntervalPicker {
   int64_t decreasing_prefetch_time_iterator_;
 
   std::vector<float> while_execution_counts_;
+  // Shape override is used to override the shape of the shape of the async copy
+  // to treat all async copies the same duration. Having an override forces
+  // prefetches to be scheduled roughly in FIFO order.
+  std::optional<Shape> shape_override_;
 };
 
 // MemorySpaceAssignment assigns memory spaces (default or alternate) to each
@@ -492,6 +505,8 @@ class MemorySpaceAssignment {
       std::function<bool(const HloValue&)>;
   using IsUseAllowedInAlternateMemoryFunction =
       std::function<bool(const HloUse&)>;
+  using IsPositionAllowedInAlternateMemoryFunction =
+      std::function<bool(const HloPosition&)>;
   using ReservedScopedMemoryFunction =
       std::function<int64_t(const HloInstruction*)>;
 
@@ -539,8 +554,8 @@ class MemorySpaceAssignment {
 
    public:
     Allocation(HloPosition defining_position, MemorySpace memory_space,
-               absl::optional<Chunk> chunk, int64_t start_time,
-               int64_t end_time, bool is_scoped_allocation)
+               std::optional<Chunk> chunk, int64_t start_time, int64_t end_time,
+               bool is_scoped_allocation)
         : defining_position_(defining_position),
           memory_space_(memory_space),
           chunk_(chunk),
@@ -566,7 +581,7 @@ class MemorySpaceAssignment {
 
     // An optional post-process step that will be called after all allocations
     // have been processed.
-    virtual Status PostProcess() { return Status::OK(); }
+    virtual Status PostProcess() { return OkStatus(); }
 
     // Marks (adds this allocation to needed_allocations) if this allocation is
     // needed. Allocation and CopyAllocations are always needed and
@@ -588,23 +603,28 @@ class MemorySpaceAssignment {
 
     const std::vector<HloUse>& uses() const { return uses_; }
     MemorySpace memory_space() const { return memory_space_; }
-    Chunk chunk() const { return *chunk_; }
+    // Returns the associated chunk that may be a nullopt if the allocation is
+    // in the default memory space.
+    std::optional<Chunk> maybe_chunk() const { return chunk_; }
+    // Returns the associated chunk. The caller should ensure that the chunk is
+    // defined (the allocation should be in the alternate memory space).
+    Chunk chunk() const {
+      CHECK(chunk_.has_value());
+      return *chunk_;
+    }
     Chunk* mutable_chunk() { return &*chunk_; }
     void set_start_time(int64_t start_time) { start_time_ = start_time; }
     int64_t start_time() const { return start_time_; }
     int64_t end_time() const { return end_time_; }
     bool is_scoped_allocation() const { return is_scoped_allocation_; }
+    virtual std::optional<int64_t> cross_program_prefetch_index() const {
+      return std::nullopt;
+    }
 
     bool operator==(const Allocation& other) const;
     virtual std::string ToString() const;
 
    protected:
-    // Descend to the shape_index element of the tuple and replace that with
-    // new_instruction.
-    StatusOr<HloInstruction*> ReplaceTupleWith(HloInstruction* new_instruction,
-                                               HloInstruction* tuple,
-                                               ShapeIndex shape_index);
-
     // Recursively create kGetTupleElement instructions if the defining position
     // shape is not an array. Returns the new instruction that has array shape.
     HloInstruction* AddGetTupleElements() const;
@@ -612,7 +632,7 @@ class MemorySpaceAssignment {
     HloPosition defining_position_;
     std::vector<HloUse> uses_;
     MemorySpace memory_space_;
-    absl::optional<Chunk> chunk_;
+    std::optional<Chunk> chunk_;
     int64_t start_time_;
     int64_t end_time_;
     const bool is_scoped_allocation_;
@@ -624,16 +644,17 @@ class MemorySpaceAssignment {
   // `copy_done_schedule_before_time` or earlier.
   class CopyAllocation : public Allocation {
    public:
-    CopyAllocation(const Allocation& prev_allocation, MemorySpace memory_space,
-                   absl::optional<Chunk> chunk, int64_t start_time,
-                   int64_t end_time, int64_t copy_done_schedule_before_time,
-                   bool is_cross_program_prefetch = false)
+    CopyAllocation(
+        const Allocation& prev_allocation, MemorySpace memory_space,
+        std::optional<Chunk> chunk, int64_t start_time, int64_t end_time,
+        int64_t copy_done_schedule_before_time,
+        std::optional<int64_t> cross_program_prefetch_index = std::nullopt)
         : Allocation(/*defining_position=*/{nullptr, {}}, memory_space, chunk,
                      start_time, end_time, /*is_scoped_allocation=*/false),
           prev_allocation_(prev_allocation),
           copy_start_schedule_after_(start_time),
           copy_done_schedule_before_(copy_done_schedule_before_time),
-          is_cross_program_prefetch_(is_cross_program_prefetch) {}
+          cross_program_prefetch_index_(cross_program_prefetch_index) {}
 
     bool is_copy_allocation() const override { return true; }
 
@@ -657,7 +678,7 @@ class MemorySpaceAssignment {
     HloInstruction* copy_start() const { return copy_start_; }
     HloInstruction* copy_done() const { return copy_done_; }
 
-    // Returns the time the buffer is first available to be used. For For
+    // Returns the time the buffer is first available to be used. For
     // CopyAllocation, this is when the copy ends, which is
     // copy_done_schedule_before.
     int64_t earliest_available_time() const override {
@@ -679,8 +700,8 @@ class MemorySpaceAssignment {
       copy_done_schedule_before_ = copy_done_schedule_before;
     }
 
-    bool is_cross_program_prefetch() const {
-      return is_cross_program_prefetch_;
+    std::optional<int64_t> cross_program_prefetch_index() const override {
+      return cross_program_prefetch_index_;
     }
 
     bool operator==(const CopyAllocation& other) const;
@@ -694,9 +715,9 @@ class MemorySpaceAssignment {
     // is before copy_done_schedule_before_.
     int64_t copy_start_schedule_after_;
     int64_t copy_done_schedule_before_;
-    bool is_cross_program_prefetch_;
     HloInstruction* copy_start_;
     HloInstruction* copy_done_;
+    std::optional<int64_t> cross_program_prefetch_index_;
   };
 
   // An allocation in the default memory space that mirrors another Allocation
@@ -707,7 +728,7 @@ class MemorySpaceAssignment {
    public:
     MirroredAllocation(const Allocation& original_allocation, int64_t time)
         : Allocation(original_allocation.defining_position(),
-                     MemorySpace::kDefault, original_allocation.chunk(),
+                     MemorySpace::kDefault, original_allocation.maybe_chunk(),
                      /*start_time=*/time,
                      /*end_time=*/time, /*is_scoped_allocation=*/false),
           original_allocation_(original_allocation) {}
@@ -732,7 +753,7 @@ class MemorySpaceAssignment {
                      HloInstruction* calling_instruction, HloPosition position,
                      int64_t time)
         : Allocation(position, MemorySpace::kDefault,
-                     original_allocation.chunk(), /*start_time=*/time,
+                     original_allocation.maybe_chunk(), /*start_time=*/time,
                      /*end_time=*/time, /*is_scoped_allocation=*/false),
           original_allocation_(original_allocation),
           calling_instruction_(calling_instruction) {}
@@ -944,7 +965,7 @@ class MemorySpaceAssignment {
                                     .instructions()
                                     .end()),
         computations_in_schedule_(),
-        preset_assignments_(absl::make_unique<PresetAssignments>()) {
+        preset_assignments_(std::make_unique<PresetAssignments>()) {
     for (const auto& computation_and_bound :
          hlo_live_range.computation_span_times()) {
       computations_in_schedule_.insert(computation_and_bound.first);
@@ -1003,6 +1024,45 @@ class MemorySpaceAssignment {
   absl::flat_hash_map<int64_t, std::vector<HloInstruction*>> schedule_before_;
 };
 
+// Config to override preferred prefetch / copy start location for a target
+// instruction, to immediately before/after a reference instruction.
+class OverridePreferredPrefetchTime {
+  // Place copy start of element indexed into operand_index_ of the (possibly
+  // tuple) operand at operand_number_ of instruction with name
+  // instruction_name_ and place it before or after (depending on placement_)
+  // the reference instruction with name reference_instruction_name_.
+ public:
+  enum class Placement { kBefore, kAfter };
+  std::string instruction_name_;
+  int64_t operand_number_;
+  ShapeIndex operand_index_;
+  Placement placement_;
+  std::string reference_instruction_name_;
+
+  OverridePreferredPrefetchTime(std::string inst_name, int64_t op_num,
+                                ShapeIndex op_idx, Placement p,
+                                std::string ref_inst_name)
+      : instruction_name_(inst_name),
+        operand_number_(op_num),
+        operand_index_(op_idx),
+        placement_(p),
+        reference_instruction_name_(ref_inst_name) {}
+
+  // For debugging use only.
+  std::string ToString() const;
+
+  static StatusOr<
+      std::vector<memory_space_assignment::OverridePreferredPrefetchTime>>
+  ParseOverridePreferredPrefetchTimesConfig(
+      std::string override_preferred_prefetch_times_config);
+
+ private:
+  static StatusOr<ShapeIndex> ParseOperandIndex(std::string config);
+
+  static StatusOr<OverridePreferredPrefetchTime>
+  ParseOverridePreferredPrefetchTimeConfig(std::string config);
+};
+
 // The different options to be passed to the Run() API.
 struct Options {
   // Backend-specific integer value that describes the alternate memory.
@@ -1016,8 +1076,8 @@ struct Options {
 
   // If provided, we sort the buffers using this comparison function
   // otherwise, we use GlobalDecreasingSizeBestFitHeap::kSpatial.
-  absl::optional<MemorySpaceAssignment::BufferIntervalCompare>
-      buffer_interval_compare = absl::nullopt;
+  std::optional<MemorySpaceAssignment::BufferIntervalCompare>
+      buffer_interval_compare = std::nullopt;
 
   // This object determines how early and how late prefetches can occur.
   PrefetchIntervalPicker* prefetch_interval_picker = nullptr;
@@ -1037,6 +1097,11 @@ struct Options {
   // the opcode) to be placed on the alternate memory.
   MemorySpaceAssignment::IsUseAllowedInAlternateMemoryFunction
       is_use_allowed_in_alternate_mem_fn = [](const HloUse&) { return true; };
+
+  // Specifies if the given position is allowed in the alternate memory.
+  MemorySpaceAssignment::IsPositionAllowedInAlternateMemoryFunction
+      is_position_allowed_in_alternate_mem_fn =
+          [](const HloPosition&) { return true; };
 
   // This function returns the amount of scoped memory in bytes that should be
   // reserved during the execution of this instruction.
@@ -1108,6 +1173,10 @@ struct Options {
   // cross-program-prefetched buffer can be reused.
   bool enable_cross_program_prefetch_freeing = true;
 
+  // The maximum number of cross program prefetches.
+  // TODO(tjablin): Use a heuristic to determine this automatically.
+  int max_cross_program_prefetches = 1;
+
   // Enable redundant eviction optimization in/around while loops. If enabled,
   // this optimization would keep a copy of the buffer in the default memory in
   // addition to alternate memory to eliminate redundant evictions.
@@ -1115,7 +1184,21 @@ struct Options {
 
   // An optional memory space assignment autotuning config, which is used
   // to sort allocated buffers.
-  absl::optional<std::vector<uint64_t>> autotuning_config = absl::nullopt;
+  std::optional<std::vector<uint64_t>> autotuning_config = std::nullopt;
+
+  // Scales effective bandwidth for async copies. Valid range is (0, 1].
+  float async_copy_bandwidth_scaling_factor = 1.0;
+
+  // If true, uses the earlier instance of the same instruction to use as
+  // preferred prefetch start time.
+  bool use_repeated_instance_for_preferred_prefetch_time = false;
+
+  // If true, enforces the FIFO order for prefetches.
+  bool enforce_prefetch_fifo_order = false;
+
+  // Config to override preferred prefetch times for operands of specific
+  // instructions to before or after given reference instructions.
+  std::vector<OverridePreferredPrefetchTime> override_preferred_prefetch_times;
 };
 
 // A struct representing an asynchronous copy with its logical start and end
@@ -1141,6 +1224,55 @@ bool operator<(const AsynchronousCopy& a, const AsynchronousCopy& b);
 
 bool operator==(const AsynchronousCopy& a, const AsynchronousCopy& b);
 bool operator!=(const AsynchronousCopy& a, const AsynchronousCopy& b);
+
+// Helper class to enforce asynchronous copy ordering. If the appropriate option
+// is enabled, we only allow asynchronous copies that are pipelined: if an
+// asynchronous copy ends earlier than another asynchronous copy, it must start
+// the same time or earlier than the other asynchronous copy; and if an
+// asynchronous copy starts earlier than another asynchronous copy, it must end
+// the same time or earlier than the other asynchronous copy.
+class AsynchronousCopyOrdering {
+ public:
+  AsynchronousCopyOrdering() = default;
+
+  // Adds an asynchronous copy.
+  void AddCopy(const AsynchronousCopy& copy);
+
+  // Removes an asynchronous copy. CHECKs that it is removed.
+  void RemoveCopy(const AsynchronousCopy& copy);
+
+  // Returns true if the addition of an asynchronous copy in the given time
+  // interval would violate the asynchronous copy ordering. E.g., consider the
+  // following scenario:
+  //                                  CS          CD
+  //  already committed async copy:   +-----------+
+  //                new async copy:     +--------+
+  //
+  // The new asynchronous copy would violate the ordering guarantee because the
+  // copy start is after an already committed asynchronous copy while its copy
+  // done is before the committed copy.
+  bool ViolatesOrdering(int64_t start_time, int64_t end_time) const;
+
+ private:
+  // We use this data structure for keys into the map that has a custom
+  // comparator for the ordering guarantees.
+  struct Interval {
+    int64_t start_time;
+    int64_t end_time;
+
+    // We allow multiple prefetches that have one or both of the same start and
+    // end times. std::map considers two values as equal if neither are less
+    // than the other.  Using this comparator, we can ensure that the only
+    // intervals that evaluate to be equal are those with the same start and end
+    // times or those with intervals that violate the FIFO order.
+    bool operator<(const Interval& other) const {
+      return (start_time < other.start_time && end_time <= other.end_time) ||
+             (start_time <= other.start_time && end_time < other.end_time);
+    }
+  };
+  // Stores asynchronous copies in a tree set respecting the pipelining order.
+  std::map<Interval, std::set<AsynchronousCopy>> ranges_;
+};
 
 // Helper class to enforce asynchronous copy resources by keeping track of
 // available copy bandwidth and elapsed times of overlapped operations. It
@@ -1189,6 +1321,13 @@ class AsynchronousCopyResource {
       const std::list<AsynchronousCopy>::iterator* current_copy = nullptr,
       float resource_to_free = 0.0);
 
+  // Same as the public RemoveCopy except it works on the async_copies_
+  // iterator. Assumes copy_it points to the last copy for its start time;
+  // otherwise the public RemoveCopy method is supposed to temporarily remove
+  // these later copies that share the same start time before removing the
+  // requested copy.
+  void RemoveCopy(std::list<AsynchronousCopy>::iterator& copy_it);
+
   // We maintain a linked list of asynchronous copies sorted by the start times.
   // This allows us to efficiently find the copy that starts right after another
   // one because adding a copy might push a copy further into the future.
@@ -1224,7 +1363,7 @@ class AlternateMemoryBestFitHeap
   // enables prefetching prefetch_candidate from default memory across program
   // boundaries.
   void AllocateCrossProgramPrefetchBuffer(
-      HloModule* module, absl::optional<BufferInterval> prefetch_candidate);
+      HloModule* module, const BufferInterval& prefetch_candidate);
 
   HeapSimulator::Result<HloValue> Finish() override;
 
@@ -1300,7 +1439,8 @@ class AlternateMemoryBestFitHeap
     int64_t latest_prefetch_time;
     int64_t size;
     bool allow_no_copy_alternate_mem_allocation;
-    absl::optional<int64_t> earliest_prefetch_time;
+    std::optional<int64_t> earliest_prefetch_time;
+    std::optional<int64_t> preferred_prefetch_time;
     AliasedOffset* preferred_offset;
     const MemorySpaceAssignment::AllocationValue::Use* use;
     MemorySpaceAssignment::AllocationValue* allocation_value;
@@ -1457,17 +1597,17 @@ class AlternateMemoryBestFitHeap
   // Find the best possible chunk candidate, where it has the longest possible
   // availability if no preferred offset is given, or at the preferred_offset if
   // it is given.
-  absl::optional<Chunk> FindBestChunkCandidate(
+  std::optional<Chunk> FindBestChunkCandidate(
       const AllocationRequest& request, const AliasedOffset* preferred_offset,
       BufferInterval* alternate_mem_interval) const;
 
   // Returns the required assignment at a particular time, if available.
-  absl::optional<RequiredMemoryAssignment> RequiredMemoryAssignmentAt(
+  std::optional<RequiredMemoryAssignment> RequiredMemoryAssignmentAt(
       const HloValue* buffer, int64_t time) const;
 
   // Searches for aliases in the use for a required assignment, and returns it
   // if found.
-  absl::optional<RequiredMemoryAssignment> AliasedRequiredAssignmentForUse(
+  std::optional<RequiredMemoryAssignment> AliasedRequiredAssignmentForUse(
       const AllocationValue::Use& use) const;
 
   // Goes through the colocated intervals and adds any required assignment.
@@ -1485,7 +1625,8 @@ class AlternateMemoryBestFitHeap
   void AddRequiredAssignment(const HloValue* value,
                              const HloInstruction* instruction,
                              MemorySpace memory_space, int64_t time,
-                             AliasedOffset* offset = nullptr);
+                             AliasedOffset* offset = nullptr,
+                             bool add_to_pending = true);
   void AddRequiredAssignment(const HloInstruction* instruction,
                              ShapeIndex index, MemorySpace memory_space,
                              AliasedOffset* offset = nullptr);
@@ -1523,13 +1664,13 @@ class AlternateMemoryBestFitHeap
   void ImportRepackedAllocations();
 
   // Adds an asynchronous copy to the allocations.
-  void AddAsyncCopy(const MemorySpaceAssignment::Allocation& prev_allocation,
-                    MemorySpace memory_space, absl::optional<Chunk> chunk,
-                    int64_t start_time, int64_t end_time,
-                    int64_t copy_done_schedule_before_time,
-                    MemorySpaceAssignment::AllocationSequence* allocations,
-                    AliasedOffset* aliased_offset, float resource,
-                    bool is_cross_program_prefetch = false);
+  void AddAsyncCopy(
+      const MemorySpaceAssignment::Allocation& prev_allocation,
+      MemorySpace memory_space, std::optional<Chunk> chunk, int64_t start_time,
+      int64_t end_time, int64_t copy_done_schedule_before_time,
+      MemorySpaceAssignment::AllocationSequence* allocations,
+      AliasedOffset* aliased_offset, float resource,
+      std::optional<int> cross_program_prefetch_index = std::nullopt);
 
   // This method is used for committing the chunk candidate but adding it to
   // pending_chunks_ so that we can "uncommit" them in case we need to roll back
@@ -1552,8 +1693,10 @@ class AlternateMemoryBestFitHeap
   // if enabled.
   void AppendBufferInfoDebugString(const BufferInterval& interval,
                                    std::string* debug_str) const;
+  void AppendScopedAllocationBufferInfoDebugString(
+      const HloInstruction* instruction, int64_t time, int64_t size,
+      std::string& debug_str) const;
   void AppendAllocationInfoDebugString(
-      const AllocationValue& value,
       const MemorySpaceAssignment::Allocation& allocation,
       std::string& debug_str) const;
   void DumpDebugStringsIfEnabled() const;
@@ -1566,9 +1709,9 @@ class AlternateMemoryBestFitHeap
   // Returns the earliest time in the [start_time, end_time] range that a new
   // allocation with the given size would fit in the alternate memory. If it
   // doesn't fit, it returns nullopt.
-  absl::optional<int> FindEarliestTimeToSatisfyPeakMemory(int start_time,
-                                                          int end_time,
-                                                          int64_t size) const;
+  std::optional<int> FindEarliestTimeToSatisfyPeakMemory(int start_time,
+                                                         int end_time,
+                                                         int64_t size) const;
 
   // Creates and returns a RepackAllocationBlock.
   static RepackAllocationBlock MakeRepackAllocationBlock(
@@ -1587,6 +1730,11 @@ class AlternateMemoryBestFitHeap
     return allocation_block;
   }
 
+  // Returns a vector of instructions that have the same fingerprint as this
+  // instruction.
+  const std::vector<const HloInstruction*>* GetRepeatedInstructionList(
+      const HloInstruction* instruction) const;
+
   MemorySpaceAssignment::AllocationSequence* allocations_;
   const Options& options_;
   const HloAliasAnalysis& alias_analysis_;
@@ -1595,6 +1743,7 @@ class AlternateMemoryBestFitHeap
   // prefetches and evictions.
   BufferIntervalTree prefetch_interval_tree_;
   BufferIntervalTree eviction_interval_tree_;
+  AsynchronousCopyOrdering async_copy_ordering_;
   AsynchronousCopyResource prefetch_async_copy_resource_;
   AsynchronousCopyResource eviction_async_copy_resource_;
   // A list of RepackAllocationBlock objects that mirrors allocation sequences,
@@ -1627,6 +1776,12 @@ class AlternateMemoryBestFitHeap
   // alternate memory (not default memory).
   int64_t memory_pressure_ = 0;
   int64_t next_async_copy_id_ = 0;
+  // Fingerprint cache.
+  absl::flat_hash_map<const HloInstruction*, std::string> fingerprint_map_;
+  // Vector of repeated instructions (that have the same fingerprint) indexed by
+  // fingerprint.
+  absl::flat_hash_map<std::string, std::vector<const HloInstruction*>>
+      repeated_inst_map_;
   // Debug strings.
   std::string buffer_info_str_;
   std::string allocation_info_str_;

@@ -33,12 +33,15 @@ namespace mlir {
 namespace quant {
 namespace {
 
-constexpr char kCustomAggregatorOpName[] = "tf.CustomAggregator";
+constexpr StringRef kCustomAggregatorOpName = "tf.CustomAggregator";
+constexpr StringRef kQuantTraitAttrName = "_tfl_quant_trait";
 
 class InsertCustomAggregationOpsPass
     : public PassWrapper<InsertCustomAggregationOpsPass,
-                         OperationPass<FuncOp>> {
+                         OperationPass<func::FuncOp>> {
  public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(InsertCustomAggregationOpsPass)
+
   StringRef getArgument() const final {
     // This is the argument used to refer to the pass in the textual format (on
     // the commandline for example).
@@ -68,9 +71,15 @@ class AddCustomAggregationOp : public RewritePattern {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    // Return early if the given operator isn't the custom aggregator op.
+    // Return early if the given operator is the custom aggregator op.
     if (op->getName().getStringRef() == kCustomAggregatorOpName)
       return failure();
+
+    // Return early if the given op is a non-quantizable op.
+    auto call_op = dyn_cast_or_null<TF::PartitionedCallOp>(op);
+    if (call_op && !op->hasAttr(kQuantTraitAttrName)) {
+      return failure();
+    }
 
     bool mutated = false;
     for (Value input : op->getOperands()) {
@@ -87,7 +96,8 @@ class AddCustomAggregationOp : public RewritePattern {
       }
 
       // Skip calibration when the given operand comes from a constant.
-      if (defining_op != nullptr && detail::isConstantLike(defining_op)) {
+      if (defining_op != nullptr &&
+          defining_op->hasTrait<OpTrait::ConstantLike>()) {
         continue;
       }
 
@@ -118,7 +128,7 @@ class AddCustomAggregationOp : public RewritePattern {
 void InsertCustomAggregationOpsPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   RewritePatternSet patterns(ctx);
-  FuncOp func = getOperation();
+  func::FuncOp func = getOperation();
 
   patterns.add<AddCustomAggregationOp>(ctx);
   if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns)))) {
@@ -129,7 +139,8 @@ void InsertCustomAggregationOpsPass::runOnOperation() {
 
 }  // namespace
 
-std::unique_ptr<OperationPass<FuncOp>> CreateInsertCustomAggregationOpsPass() {
+std::unique_ptr<OperationPass<func::FuncOp>>
+CreateInsertCustomAggregationOpsPass() {
   return std::make_unique<InsertCustomAggregationOpsPass>();
 }
 

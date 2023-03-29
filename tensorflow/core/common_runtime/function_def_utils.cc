@@ -35,7 +35,7 @@ Status FunctionDefToBodyHelper(
   InstantiationResult result;
   TF_RETURN_IF_ERROR(InstantiateFunction(fdef, attrs, get_func_sig, &result));
 
-  auto graph = absl::make_unique<Graph>(lib_def);
+  auto graph = std::make_unique<Graph>(lib_def);
 
   auto construction_context_iter = fdef.attr().find("_construction_context");
   if (construction_context_iter != fdef.attr().end()) {
@@ -52,13 +52,15 @@ Status FunctionDefToBodyHelper(
   opts.expect_device_spec = false;
   TF_RETURN_IF_ERROR(ConvertNodeDefsToGraph(opts, result.nodes, graph.get()));
 
-  const StackTracesMap& stack_traces =
+  const StackTracesMap* stack_traces =
       lib_def->GetStackTraces(fdef.signature().name());
-  for (Node* n : graph->nodes()) {
-    if (n) {
-      auto it = stack_traces.find(n->name());
-      if (it != stack_traces.end()) {
-        n->SetStackTrace(it->second);
+  if (stack_traces) {
+    for (Node* n : graph->nodes()) {
+      if (n) {
+        auto it = stack_traces->find(n->name());
+        if (it != stack_traces->end()) {
+          n->SetStackTrace(it->second);
+        }
       }
     }
   }
@@ -68,9 +70,9 @@ Status FunctionDefToBodyHelper(
   std::vector<ControlFlowInfo> dummy;
   TF_RETURN_IF_ERROR(BuildControlFlowInfo(graph.get(), &dummy));
 
-  *fbody = absl::make_unique<FunctionBody>(fdef, result.arg_types,
-                                           result.ret_types, graph.release());
-  return Status::OK();
+  *fbody = std::make_unique<FunctionBody>(fdef, result.arg_types,
+                                          result.ret_types, graph.release());
+  return OkStatus();
 }
 
 Status FunctionDefToBodyHelper(const FunctionDef& fdef, const AttrSlice& attrs,

@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PROFILER_CONVERT_OP_METRICS_TO_RECORD_H_
 #define TENSORFLOW_CORE_PROFILER_CONVERT_OP_METRICS_TO_RECORD_H_
 
+#include <cstdint>
 #include <vector>
 
 #include "tensorflow/core/profiler/protobuf/op_metrics.pb.h"
@@ -26,6 +27,55 @@ namespace profiler {
 
 std::vector<const OpMetrics*> SortedOpMetricsDb(const OpMetricsDb& metrics_db,
                                                 int max_records = -1);
+
+inline double GigaFlopsPerSecondPerCore(const OpMetrics& metrics) {
+  // flops and time_ps are accumulated across all occurrences on all cores.
+  // time_ps is used instead of self_time_ps because flops for an op includes
+  // the flops executed by children (nested) ops.
+  return SafeDivide(metrics.flops(), PicoToNano(metrics.time_ps()));
+}
+
+// Return ByteAccessed for memory_space and operation_type.
+inline double BytesAccessedPerCore(
+    const OpMetrics& metrics, uint64_t memory_space,
+    OpMetrics::MemoryAccessed::OperationType operation_type) {
+  uint64_t bytes = 0;
+  if (memory_space == MemorySpace::MEMORY_SPACE_ALL) {
+    bytes = metrics.bytes_accessed();
+  } else {
+    for (const auto& breakdown : metrics.memory_accessed_breakdown()) {
+      // Count either on-chip or off-chip bytes.
+      if ((breakdown.operation_type() != operation_type) &&
+          (operation_type != OpMetrics::MemoryAccessed::UNKNOWN)) {
+        continue;
+      }
+      if (((memory_space == MemorySpace::MEMORY_SPACE_HBM) &&
+           (breakdown.memory_space() == MemorySpace::MEMORY_SPACE_HBM)) ||
+          ((memory_space == MemorySpace::MEMORY_SPACE_ON_CHIP) &&
+           (breakdown.memory_space() != MemorySpace::MEMORY_SPACE_HBM))) {
+        bytes += breakdown.bytes_accessed();
+      }
+    }
+  }
+  return bytes;
+}
+
+inline double GigaBytesPerSecondPerCore(
+    const OpMetrics& metrics, uint64_t memory_space,
+    OpMetrics::MemoryAccessed::OperationType operation_type) {
+  // bytes_accessed and time_ps are accumulated across all occurrences on all
+  // cores.
+  // time_ps is used instead of self_time_ps because bytes_accessed for an op
+  // includes the bytes accessed by children (nested) ops.
+  return SafeDivide(BytesAccessedPerCore(metrics, memory_space, operation_type),
+                    PicoToNano(metrics.time_ps()));
+}
+
+inline double GibiBytesPerSecondPerCore(
+    const OpMetrics& metrics, uint64_t memory_space,
+    OpMetrics::MemoryAccessed::OperationType op_type) {
+  return GigaToGibi(GigaBytesPerSecondPerCore(metrics, memory_space, op_type));
+}
 
 template <typename Record>
 inline void SetExecutionTimes(const OpMetrics& metrics, Record* record) {
@@ -84,10 +134,10 @@ inline void SetRooflineMetrics(const OpMetrics& metrics,
                                double ridge_point_operational_intensity,
                                Record* record) {
   using ::tensorflow::profiler::PicoToNano;
-  record->set_measured_flop_rate(
-      SafeDivide(metrics.flops(), PicoToNano(metrics.time_ps())));
+  record->set_measured_flop_rate(GigaFlopsPerSecondPerCore(metrics));
   record->set_measured_memory_bw(
-      SafeDivide(metrics.bytes_accessed(), PicoToNano(metrics.time_ps())));
+      GigaBytesPerSecondPerCore(metrics, MemorySpace::MEMORY_SPACE_ALL,
+                                OpMetrics::MemoryAccessed::UNKNOWN));
   record->set_operational_intensity(
       SafeDivide(metrics.flops(), metrics.bytes_accessed()));
   record->set_bound_by((metrics.bytes_accessed() != 0)

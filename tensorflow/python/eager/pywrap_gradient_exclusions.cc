@@ -50,7 +50,7 @@ auto OpGradientInfoInit(const T &a) {
 
 absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
     const tensorflow::string &op_name) {
-  static std::array<OpIndexInfo, 363> a = {{
+  static std::array<OpIndexInfo, 366> a = {{
       {"Acosh"},
       {"AllToAll", 1, {0}},
       {"ApproximateEqual"},
@@ -235,9 +235,11 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
       {"QueueDequeueMany"},
       {"QueueDequeueUpTo"},
       {"QueueSize"},
+      {"RaggedFillEmptyRows"},
       {"RaggedRange"},
       {"RandomCrop"},
       {"RandomIndexShuffle"},
+      {"RandomShuffle"},
       {"RandomStandardNormal"},
       {"RandomUniform"},
       {"Range"},
@@ -336,6 +338,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
       {"StatelessParameterizedTruncatedNormal", 1, {1}},
       {"StatelessRandomBinomial"},
       {"StatelessRandomGammaV2", 1, {1}},
+      {"StatelessRandomGammaV3", 3, {1, 2, 3}},
       {"StatelessRandomNormal"},
       {"StatelessRandomNormalV2"},
       {"StatelessRandomPoisson"},
@@ -393,7 +396,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
       {"TensorScatterAdd", 2, {0, 2}},
       {"TensorScatterSub", 2, {0, 2}},
       {"TensorScatterUpdate", 1, {0}},
-      {"TensorStridedSliceUpdate", 2, {0, 4}},
+      {"TensorStridedSliceUpdate", 1, {0}},
       {"TensorSummary"},
       {"TensorSummaryV2"},
       {"TextLineReader"},
@@ -426,7 +429,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedInputIndices(
 
 absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
     const tensorflow::string &op_name) {
-  static std::array<OpIndexInfo, 481> a = {{
+  static std::array<OpIndexInfo, 484> a = {{
       {"Abs"},
       {"AccumulateNV2"},
       {"Acos"},
@@ -435,6 +438,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"AddV2"},
       {"AllToAll"},
       {"Angle"},
+      {"ApproxTopK", 1, {0}},
       {"ApproximateEqual"},
       {"ArgMax"},
       {"ArgMin"},
@@ -686,6 +690,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"QueueSize"},
       {"RFFT"},
       {"RFFT2D"},
+      {"RaggedFillEmptyRows", 3, {0, 1, 2}},
       {"RaggedGather"},
       {"RaggedRange"},
       {"RaggedTensorToSparse"},
@@ -693,6 +698,7 @@ absl::optional<tensorflow::gtl::FlatSet<int>> OpGradientUnusedOutputIndices(
       {"RaggedTensorToVariant"},
       {"RandomCrop"},
       {"RandomIndexShuffle"},
+      {"RandomShuffle"},
       {"RandomStandardNormal"},
       {"RandomUniform"},
       {"Range"},

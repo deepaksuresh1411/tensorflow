@@ -21,6 +21,7 @@ limitations under the License.
 #include "absl/algorithm/container.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
+#include "tensorflow/core/common_runtime/arg_ret_placement.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/executor.h"
 #include "tensorflow/core/common_runtime/executor_factory.h"
@@ -28,6 +29,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/common_runtime/graph_optimizer.h"
 #include "tensorflow/core/common_runtime/inline_function_utils.h"
+#include "tensorflow/core/common_runtime/int32_fulltype.h"
 #include "tensorflow/core/common_runtime/memory_types.h"
 #include "tensorflow/core/common_runtime/process_function_library_runtime.h"
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
@@ -483,9 +485,9 @@ FunctionLibraryRuntimeImpl::FunctionLibraryRuntimeImpl(
                        ? ProcessFunctionLibraryRuntime::kDefaultFLRDevice
                        : device_->name()),
       next_handle_(0),
-      items_(absl::make_unique<
+      items_(std::make_unique<
              absl::flat_hash_map<Handle, std::unique_ptr<Item>>>()),
-      function_handle_cache_(absl::make_unique<FunctionHandleCache>(this)),
+      function_handle_cache_(std::make_unique<FunctionHandleCache>(this)),
       parent_(parent) {
   get_func_sig_ = [this](const string& op, const OpDef** sig) {
     return base_lib_def_->LookUpOpDef(op, sig);
@@ -535,7 +537,7 @@ class CallOp : public AsyncOpKernel {
     OP_REQUIRES_ASYNC(ctx, lib != nullptr,
                       errors::Internal("No function library is provided."),
                       done);
-    FunctionLibraryRuntime::Options opts;
+    FunctionLibraryRuntime::Options opts(ctx->step_id());
     opts.rendezvous = ctx->rendezvous();
     opts.cancellation_manager = ctx->cancellation_manager();
     opts.step_container = ctx->step_container();
@@ -550,12 +552,6 @@ class CallOp : public AsyncOpKernel {
       args.push_back(ctx->input(i));
     }
     std::vector<Tensor>* rets = new std::vector<Tensor>;
-    profiler::TraceMe trace_me(
-        [&] {
-          return absl::StrCat("CallOp #parent_step_id=", ctx->step_id(),
-                              ",function_step_id=", opts.step_id, "#");
-        },
-        /*level=*/2);
     lib->Run(opts, handle_, args, rets,
              [ctx, done, rets](const Status& status) {
                if (!status.ok()) {
@@ -603,7 +599,7 @@ Status FunctionLibraryRuntimeImpl::GetRetTypes(Handle h,
   }
   const FunctionBody* fbody = GetFunctionBody(h);
   *ret_types = fbody->ret_types;
-  return Status::OK();
+  return OkStatus();
 }
 
 Status FunctionLibraryRuntimeImpl::CreateKernel(
@@ -652,18 +648,19 @@ Status FunctionLibraryRuntimeImpl::CreateKernel(
   const FunctionBody* fbody = GetFunctionBody(handle);
   CHECK_NOTNULL(fbody);
 
-  // TODO(zhifengc): For now, we assume int32 and resources are always on host
-  // memory and other types are always on device memory. We should do type
+  // Originally, int32 and resources were always on host memory and other types
+  // are always on device memory. Now, having TFT_SHAPE_TENSOR full type
+  // information specifies host memory and unspecified or other full type
+  // information specifies device memory. Full type information can be set to
+  // match the orginal behavior, manually for manual placement or by using type
   // inference over function body to derive the correct input/output memory
   // types.
   MemoryTypeVector input_memory_types;
-  for (const auto& t : fbody->arg_types) {
-    input_memory_types.push_back(MTypeFromDType(t));
-  }
+  TF_RETURN_IF_ERROR(full_type::SetMemoryTypeForArgs(
+      fbody->arg_nodes, fbody->arg_types, input_memory_types));
   MemoryTypeVector output_memory_types;
-  for (const auto& t : fbody->ret_types) {
-    output_memory_types.push_back(MTypeFromDType(t));
-  }
+  TF_RETURN_IF_ERROR(full_type::SetMemoryTypeForRets(
+      fbody->ret_nodes, fbody->ret_types, output_memory_types));
 
   // Constructs a CallOp kernel for running the instantiated function.
   auto device_type = DeviceType(device_->attributes().device_type());
@@ -725,7 +722,7 @@ Status FunctionLibraryRuntimeImpl::InstantiateSymbolicGradient(
     CHECK_NOTNULL(f_body);
     *g_body = SymbolicGradient(*f_body);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 bool FunctionLibraryRuntimeImpl::IsLocalTarget(
@@ -785,7 +782,7 @@ Status FunctionLibraryRuntimeImpl::Instantiate(
                                 " not found in items.");
       }
       ++item_handle->second->instantiation_counter;
-      return Status::OK();
+      return OkStatus();
     }
   }
 
@@ -812,6 +809,9 @@ Status FunctionLibraryRuntimeImpl::Instantiate(
       return errors::NotFound("Function ", function_name, " is not defined.");
     }
     TF_RETURN_IF_ERROR(FunctionDefToBody(*fdef, attrs, lib_def, &fbody));
+    Int32FulltypePass int32_fulltype("FunctionLibraryRuntime::Instantiate");
+    TF_RETURN_IF_ERROR(
+        int32_fulltype.ProcessGraph(fbody->graph, /*ints_on_device=*/false));
   }
 
   LocalHandle local_handle;
@@ -845,7 +845,7 @@ Status FunctionLibraryRuntimeImpl::Instantiate(
     TF_RETURN_IF_ERROR(GetOrCreateItem(local_handle, &item));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status FunctionLibraryRuntimeImpl::ReleaseHandle(Handle handle) {
@@ -858,7 +858,7 @@ Status FunctionLibraryRuntimeImpl::ReleaseHandle(Handle handle) {
   {
     mutex_lock l(mu_);
     // Return directly if all items has already been released.
-    if (items_ == nullptr) return Status::OK();
+    if (items_ == nullptr) return OkStatus();
 
     auto it = items_->find(h);
     if (it == items_->end()) {
@@ -941,7 +941,7 @@ Status FunctionLibraryRuntimeImpl::CreateItem(Item** item) {
   }
   const FunctionLibraryDefinition* lib_def =
       flr->GetFunctionLibraryDefinition();
-  auto g = absl::make_unique<Graph>(lib_def);
+  auto g = std::make_unique<Graph>(lib_def);
   CopyGraph(*fbody->graph, g.get());
 
   PruneFunctionBody(fbody->fdef, g.get());
@@ -991,7 +991,7 @@ Status FunctionLibraryRuntimeImpl::CreateItem(Item** item) {
       (*item)->exec = exec.release();
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status FunctionLibraryRuntimeImpl::GetOrCreateItem(LocalHandle local_handle,
@@ -1005,7 +1005,7 @@ Status FunctionLibraryRuntimeImpl::GetOrCreateItem(LocalHandle local_handle,
     }
     *item = iter->second.get();
     if ((*item)->exec != nullptr) {
-      return Status::OK();
+      return OkStatus();
     }
   }
   // NOTE: We need to call CreateItem out of mu_ because creating an
@@ -1018,6 +1018,7 @@ void FunctionLibraryRuntimeImpl::ExecutorArgsFromOptions(
     Executor::Args* exec_args) {
   // Inherit the step_id from the caller.
   exec_args->step_id = run_opts.step_id;
+  exec_args->function_trace_id = random::New64();
   exec_args->rendezvous = run_opts.rendezvous;
   exec_args->stats_collector = run_opts.stats_collector;
   exec_args->cancellation_manager = run_opts.cancellation_manager;
@@ -1063,22 +1064,17 @@ void FunctionLibraryRuntimeImpl::RunRemote(const Options& opts, Handle handle,
   ExecutorArgsFromOptions(opts, frame, exec_args);
 
   std::vector<AllocatorAttributes> args_alloc_attrs, rets_alloc_attrs;
-  args_alloc_attrs.reserve(fbody->arg_types.size());
-  rets_alloc_attrs.reserve(fbody->ret_types.size());
-  // Note: Functions assume that int32's are always on host memory.
-  for (const auto& arg_type : fbody->arg_types) {
-    AllocatorAttributes arg_alloc_attrs;
-    if (MTypeFromDType(arg_type) == HOST_MEMORY) {
-      arg_alloc_attrs.set_on_host(true);
-    }
-    args_alloc_attrs.push_back(arg_alloc_attrs);
+  s = full_type::SetAllocAttrsForArgs(fbody->arg_nodes, fbody->arg_types,
+                                      args_alloc_attrs);
+  if (!s.ok()) {
+    done(s);
+    return;
   }
-  for (const auto& ret_type : fbody->ret_types) {
-    AllocatorAttributes ret_alloc_attrs;
-    if (MTypeFromDType(ret_type) == HOST_MEMORY) {
-      ret_alloc_attrs.set_on_host(true);
-    }
-    rets_alloc_attrs.push_back(ret_alloc_attrs);
+  s = full_type::SetAllocAttrsForRets(fbody->ret_nodes, fbody->ret_types,
+                                      rets_alloc_attrs);
+  if (!s.ok()) {
+    done(s);
+    return;
   }
 
   bool allow_dead_tensors = opts.allow_dead_tensors;
@@ -1183,17 +1179,17 @@ void FunctionLibraryRuntimeImpl::Run(const Options& opts, Handle handle,
     return;
   }
 
-  profiler::TraceMeProducer activity(
-      // To TraceMeConsumers in ExecutorState::Process/Finish.
-      [&opts] {
-        return profiler::TraceMeEncode("FunctionRun",
-                                       {{"id", opts.step_id}, {"_r", 1}});
-      },
-      profiler::ContextType::kTfExecutor, opts.step_id,
-      profiler::TraceMeLevel::kInfo);
-
   Executor::Args exec_args;
   ExecutorArgsFromOptions(run_opts, frame, &exec_args);
+
+  profiler::TraceMeProducer activity(
+      // To TraceMeConsumers in ExecutorState::Process/Finish.
+      [&run_opts] {
+        return profiler::TraceMeEncode("FunctionRun",
+                                       {{"id", run_opts.step_id}, {"_r", 1}});
+      },
+      profiler::ContextType::kTfExecutor, *exec_args.function_trace_id,
+      profiler::TraceMeLevel::kInfo);
 
   bool allow_dead_tensors = run_opts.allow_dead_tensors;
   item->exec->RunAsync(
@@ -1256,17 +1252,17 @@ void FunctionLibraryRuntimeImpl::Run(const Options& opts, Handle handle,
   }
   DCHECK(run_opts.runner != nullptr);
 
+  Executor::Args exec_args;
+  ExecutorArgsFromOptions(run_opts, frame, &exec_args);
   profiler::TraceMeProducer activity(
       // To TraceMeConsumers in ExecutorState::Process/Finish.
       [&opts] {
         return profiler::TraceMeEncode("FunctionRun",
                                        {{"id", opts.step_id}, {"_r", 1}});
       },
-      profiler::ContextType::kTfExecutor, opts.step_id,
+      profiler::ContextType::kTfExecutor, *exec_args.function_trace_id,
       profiler::TraceMeLevel::kInfo);
 
-  Executor::Args exec_args;
-  ExecutorArgsFromOptions(run_opts, frame, &exec_args);
   item->exec->RunAsync(exec_args, std::move(done));
 }
 
@@ -1288,7 +1284,7 @@ Status FunctionLibraryRuntimeImpl::PrepareRunSync(
 
   if (run_opts->create_rendezvous) {
     *out_rendezvous =
-        absl::make_unique<PrivateIntraProcessRendezvous>(device_mgr_);
+        std::make_unique<PrivateIntraProcessRendezvous>(device_mgr_);
     run_opts->rendezvous = out_rendezvous->get();
     run_opts->create_rendezvous = false;
   }
@@ -1297,7 +1293,7 @@ Status FunctionLibraryRuntimeImpl::PrepareRunSync(
       device_name_, handle, /*include_multi_device=*/true);
   if (local_handle == kInvalidLocalHandle) {
     *out_item = nullptr;
-    return Status::OK();
+    return OkStatus();
   }
 
   TF_RETURN_IF_ERROR(GetOrCreateItem(local_handle, out_item));
@@ -1307,7 +1303,7 @@ Status FunctionLibraryRuntimeImpl::PrepareRunSync(
   }
   DCHECK(run_opts->runner != nullptr);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status FunctionLibraryRuntimeImpl::RunSync(Options opts, Handle handle,
@@ -1374,7 +1370,7 @@ Status FunctionLibraryRuntimeImpl::Clone(
                                     skip_flib_def));
   *out_flr = (*out_pflr)->GetFLR(device_->name());
   if (*out_flr != nullptr) {
-    return Status::OK();
+    return OkStatus();
   } else {
     return errors::Internal("Cloning FunctionLibraryRuntime failed.");
   }
@@ -1384,16 +1380,16 @@ namespace {
 
 struct CustomCreatorSingleton {
   mutex mu;
-  CustomKernelCreator* custom_creator = nullptr;
+  std::unique_ptr<CustomKernelCreator> custom_creator = nullptr;
 
   void Set(CustomKernelCreator* cb) {
     mutex_lock l(mu);
-    custom_creator = cb;
+    custom_creator.reset(cb);
   }
 
   CustomKernelCreator* Get() {
     mutex_lock l(mu);
-    return custom_creator;
+    return custom_creator.get();
   }
 };
 

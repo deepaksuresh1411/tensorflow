@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/dump.h"
 
+#include <functional>
 #include <memory>
 #include <queue>
 #include <utility>
@@ -23,20 +24,21 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/ToolOutputFile.h"
+#include "llvm/Support/raw_ostream.h"
+#include "mlir/IR/OperationSupport.h"  // from @llvm-project
 #include "mlir/Support/FileUtilities.h"  // from @llvm-project
 #include "mlir/Transforms/LocationSnapshot.h"  // from @llvm-project
+#include "tensorflow/compiler/xla/hlo/ir/hlo_module.h"
 #include "tensorflow/compiler/xla/service/hlo_graph_dumper.h"
-#include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/service/hlo_proto_util.h"
 #include "tensorflow/compiler/xla/util.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/lib/io/zlib_compression_options.h"
-#include "tensorflow/core/lib/io/zlib_outputbuffer.h"
-#include "tensorflow/core/lib/strings/proto_serialization.h"
-#include "tensorflow/core/platform/env.h"
-#include "tensorflow/core/platform/path.h"
-#include "tensorflow/core/platform/regexp.h"
+#include "tensorflow/tsl/lib/io/zlib_compression_options.h"
+#include "tensorflow/tsl/lib/io/zlib_outputbuffer.h"
+#include "tensorflow/tsl/lib/strings/proto_serialization.h"
+#include "tensorflow/tsl/platform/env.h"
+#include "tensorflow/tsl/platform/path.h"
+#include "tensorflow/tsl/platform/regexp.h"
+#include "tensorflow/tsl/platform/status.h"
 
 namespace xla {
 
@@ -61,7 +63,8 @@ struct CanonicalDebugOptions {
         dump_module_metadata(opts.xla_dump_module_metadata()),
         dump_compress_protos(opts.xla_dump_compress_protos()),
         dump_hlo_metadata(!opts.xla_dump_disable_metadata()),
-        dump_as_long_text(opts.xla_dump_hlo_as_long_text()) {
+        dump_as_long_text(opts.xla_dump_hlo_as_long_text()),
+        dump_mlir_pretty_form(opts.xla_dump_enable_mlir_pretty_form()) {
     // This constructor examines the values in `opts` and turns on other flags
     // based on what we think is the user's intent.  To reduce confusion about
     // what was a user-specified value versus an extrapolated value, within this
@@ -144,7 +147,7 @@ struct CanonicalDebugOptions {
     std::string dump_to_lower = absl::AsciiStrToLower(dump_to);
     if (dump_to_lower == "sponge" ||
         dump_to_lower == "test_undeclared_outputs_dir") {
-      if (!tensorflow::io::GetTestUndeclaredOutputsDir(&dump_to)) {
+      if (!tsl::io::GetTestUndeclaredOutputsDir(&dump_to)) {
         LOG(ERROR) << "--xla_dump_to=" << opts.xla_dump_to()
                    << ", but environment variable TEST_UNDECLARED_OUTPUTS_DIR "
                       "is not set, so cannot dump anywhere.";
@@ -177,6 +180,7 @@ struct CanonicalDebugOptions {
   bool dump_compress_protos;
   bool dump_hlo_metadata;
   bool dump_as_long_text;
+  bool dump_mlir_pretty_form;
 };
 
 // Helper class to hold a list of functions that produces data to be written to
@@ -201,15 +205,14 @@ class DataProducer {
   std::queue<std::function<std::string()>> produce_funcs_;
 };
 
-static Status WriteStringToFile(tensorflow::Env* env, const std::string& fname,
+static Status WriteStringToFile(tsl::Env* env, const std::string& fname,
                                 DataProducer& data_producer, bool compressed) {
-  std::unique_ptr<tensorflow::WritableFile> file;
+  std::unique_ptr<tsl::WritableFile> file;
   TF_RETURN_IF_ERROR(env->NewWritableFile(fname, &file));
   if (compressed) {
-    auto gz_opts = tensorflow::io::ZlibCompressionOptions::GZIP();
-    tensorflow::io::ZlibOutputBuffer gz_file(
-        file.get(), gz_opts.input_buffer_size, gz_opts.output_buffer_size,
-        gz_opts);
+    auto gz_opts = tsl::io::ZlibCompressionOptions::GZIP();
+    tsl::io::ZlibOutputBuffer gz_file(file.get(), gz_opts.input_buffer_size,
+                                      gz_opts.output_buffer_size, gz_opts);
     TF_RETURN_IF_ERROR(gz_file.Init());
     while (auto next_producer = data_producer.Next()) {
       TF_RETURN_IF_ERROR(gz_file.Append(next_producer()));
@@ -223,38 +226,37 @@ static Status WriteStringToFile(tensorflow::Env* env, const std::string& fname,
   }
 }
 
-static Status WriteStringToFile(tensorflow::Env* env, const std::string& fname,
+static Status WriteStringToFile(tsl::Env* env, const std::string& fname,
                                 absl::string_view data, bool compressed) {
   if (!compressed) {
-    return tensorflow::WriteStringToFile(env, fname, data);
+    return tsl::WriteStringToFile(env, fname, data);
   }
-  std::unique_ptr<tensorflow::WritableFile> file;
+  std::unique_ptr<tsl::WritableFile> file;
   TF_RETURN_IF_ERROR(env->NewWritableFile(fname, &file));
-  auto gz_opts = tensorflow::io::ZlibCompressionOptions::GZIP();
-  tensorflow::io::ZlibOutputBuffer gz_file(file.get(),
-                                           gz_opts.input_buffer_size,
-                                           gz_opts.output_buffer_size, gz_opts);
+  auto gz_opts = tsl::io::ZlibCompressionOptions::GZIP();
+  tsl::io::ZlibOutputBuffer gz_file(file.get(), gz_opts.input_buffer_size,
+                                    gz_opts.output_buffer_size, gz_opts);
   TF_RETURN_IF_ERROR(gz_file.Init());
   TF_RETURN_IF_ERROR(gz_file.Append(data));
   return gz_file.Close();
 }
 
-static absl::optional<std::string> GetDumpFilePath(
+static std::optional<std::string> GetDumpFilePath(
     string_view filename, const CanonicalDebugOptions& opts) {
   if (opts.dumping_to_stdout()) {
     LOG(ERROR) << "Refusing to write " << filename
-               << " to stdout.  Pass --xla_dump_to=<path> to write to a file.";
-    return absl::nullopt;
+               << " to stdout. Pass --xla_dump_to=<path> to write to a file.";
+    return std::nullopt;
   }
 
   if (opts.dump_to.empty()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   const std::string& dir = opts.dump_to;
   VLOG(1) << "Dumping " << filename << " to " << dir;
 
-  tensorflow::Env* env = tensorflow::Env::Default();
+  tsl::Env* env = tsl::Env::Default();
   // Two threads can race to observe the absence of the dump directory and
   // simultaneously try to create it, causing the "losing" thread to get a
   // "directory already exists" error.  We can work around this by checking
@@ -264,14 +266,14 @@ static absl::optional<std::string> GetDumpFilePath(
     if (!status.ok() && !env->IsDirectory(dir).ok()) {
       LOG(ERROR) << "Could not create directory " << dir
                  << " for dumping XLA debug data: " << status;
-      return absl::nullopt;
+      return std::nullopt;
     }
   }
 
   // Make sure we are not going to dump more modules than the user has asked.
   if (opts.dump_max_hlo_modules > 0) {
     std::vector<std::string> matches;
-    auto pattern = tensorflow::io::JoinPath(dir, "*module_*.*");
+    auto pattern = tsl::io::JoinPath(dir, "*module_*.*");
     auto status = env->GetMatchingPaths(pattern, &matches);
     if (!status.ok()) {
       LOG(ERROR) << "Could not get matching paths for pattern " << pattern
@@ -292,63 +294,63 @@ static absl::optional<std::string> GetDumpFilePath(
         LOG(ERROR) << "Have already dumped " << dumped_module_ids.size()
                    << " modules, more than the limit of "
                    << opts.dump_max_hlo_modules;
-        return absl::nullopt;
+        return std::nullopt;
       }
     }
   }
 
-  return tensorflow::io::JoinPath(dir, SanitizeFileName(std::string(filename)));
+  return tsl::io::JoinPath(dir, SanitizeFileName(std::string(filename)));
 }
 
-static absl::optional<std::string> DumpToFileInDirImpl(
+static std::optional<std::string> DumpToFileInDirImpl(
     string_view filename, string_view contents,
     const CanonicalDebugOptions& opts, bool compress = false) {
   auto file_path = GetDumpFilePath(filename, opts);
-  if (!file_path) return absl::nullopt;
+  if (!file_path) return std::nullopt;
 
-  auto status = WriteStringToFile(tensorflow::Env::Default(), *file_path,
-                                  contents, compress);
+  auto status =
+      WriteStringToFile(tsl::Env::Default(), *file_path, contents, compress);
   if (!status.ok()) {
     LOG(ERROR) << "Could not write XLA debug data to " << *file_path << ": "
                << status;
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   return file_path;
 }
 
-static absl::optional<std::string> DumpToFileInDirImpl(
+static std::optional<std::string> DumpToFileInDirImpl(
     string_view filename, DataProducer& data_producer,
     const CanonicalDebugOptions& opts, bool compress = false) {
   auto file_path = GetDumpFilePath(filename, opts);
-  if (!file_path) return absl::nullopt;
+  if (!file_path) return std::nullopt;
 
-  auto status = WriteStringToFile(tensorflow::Env::Default(), *file_path,
+  auto status = WriteStringToFile(tsl::Env::Default(), *file_path,
                                   data_producer, compress);
   if (!status.ok()) {
     LOG(ERROR) << "Could not write XLA debug data to " << *file_path << ": "
                << status;
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   return file_path;
 }
 
-static absl::optional<std::string> DumpToFileInDirOrStdoutImpl(
+static std::optional<std::string> DumpToFileInDirOrStdoutImpl(
     string_view filename, string_view contents,
     const CanonicalDebugOptions& opts) {
   // Dump to stdout if that's called for.
   if (opts.dumping_to_stdout()) {
     std::cout << "*** Begin " << filename << " ***\n"
               << contents << "\n*** End " << filename << " ***" << std::endl;
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   // Otherwise, dump to a file.
   return DumpToFileInDirImpl(filename, contents, opts);
 }
 
-static absl::optional<std::string> DumpToFileInDirOrStdoutImpl(
+static std::optional<std::string> DumpToFileInDirOrStdoutImpl(
     string_view filename, DataProducer& data_producer,
     const CanonicalDebugOptions& opts) {
   // Dump to stdout if that's called for.
@@ -358,7 +360,7 @@ static absl::optional<std::string> DumpToFileInDirOrStdoutImpl(
       std::cout << next_producer();
     }
     std::cout << "\n*** End " << filename << " ***" << std::endl;
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   // Otherwise, dump to a file.
@@ -380,18 +382,18 @@ static bool IsTrivial(const HloComputation& computation) {
 // Returns full file paths of all dumps of the module.
 static std::vector<std::string> DumpHloModuleImpl(
     const HloModule& module, const BufferAssignment* buffer_assn,
-    const HloExecutionProfile* profile, string_view prefix, string_view suffix,
-    const CanonicalDebugOptions& opts) {
+    string_view prefix, string_view suffix, const CanonicalDebugOptions& opts) {
   std::string filename = FilenameFor(module, prefix, suffix);
 
-  std::vector<absl::optional<std::string>> file_paths;
+  std::vector<std::optional<std::string>> file_paths;
 
   if (opts.dump_as_text) {
     auto print_options = opts.dump_as_long_text
-                             ? HloPrintOptions()
+                             ? HloPrintOptions::Default()
                              : HloPrintOptions::ShortParsable();
     print_options.set_print_large_constants(false);
     print_options.set_print_control_dependencies(true);
+    print_options.set_print_operand_index_annotation_interval(5);
     print_options.set_print_backend_config(true);
     print_options.set_print_metadata(opts.dump_hlo_metadata);
     file_paths.push_back(DumpToFileInDirOrStdoutImpl(
@@ -411,7 +413,7 @@ static std::vector<std::string> DumpHloModuleImpl(
     HloProto module_proto =
         buffer_assn ? MakeHloProto(module, *buffer_assn) : MakeHloProto(module);
     std::string pb;
-    if (!tensorflow::SerializeToStringDeterministic(module_proto, &pb)) {
+    if (!tsl::SerializeToStringDeterministic(module_proto, &pb)) {
       pb = "Failed to serialize HLO module proto.";
     }
     file_paths.push_back(DumpToFileInDirImpl(
@@ -419,12 +421,17 @@ static std::vector<std::string> DumpHloModuleImpl(
         pb, opts, opts.dump_compress_protos));
   }
 
-  auto render_graph = [&](RenderedGraphFormat format) {
-    StatusOr<std::string> rendered_graph = RenderGraph(
-        *module.entry_computation(),
-        /*label=*/filename, module.config().debug_options(), format, profile);
+  auto render_graph = [&](RenderedGraphFormat format,
+                          bool show_fusion_subcomputations = true) {
+    HloRenderOptions hlo_render_options;
+    hlo_render_options.show_fusion_subcomputations =
+        show_fusion_subcomputations;
+    StatusOr<std::string> rendered_graph =
+        RenderGraph(*module.entry_computation(),
+                    /*label=*/filename, module.config().debug_options(), format,
+                    hlo_render_options);
     if (rendered_graph.ok()) {
-      return std::move(rendered_graph).ValueOrDie();
+      return std::move(rendered_graph).value();
     }
     return StrFormat("Error rendering graph: %s",
                      rendered_graph.status().ToString());
@@ -440,6 +447,11 @@ static std::vector<std::string> DumpHloModuleImpl(
     file_paths.push_back(
         DumpToFileInDirImpl(StrFormat("%s.html", filename),
                             render_graph(RenderedGraphFormat::kHtml), opts));
+    if (absl::StrContains(filename, kAfterOptimizationsDumpName)) {
+      file_paths.push_back(DumpToFileInDirImpl(
+          StrFormat("%s.top_level.html", filename),
+          render_graph(RenderedGraphFormat::kHtml, false), opts));
+    }
   }
 
   if (opts.dump_fusion_visualization) {
@@ -476,10 +488,14 @@ static std::vector<std::string> DumpHloModuleImpl(
   }
 
   std::vector<std::string> dumped_file_paths;
-  for (const absl::optional<std::string>& path : file_paths) {
+  for (const std::optional<std::string>& path : file_paths) {
     if (path.has_value()) {
       dumped_file_paths.push_back(*path);
     }
+  }
+  if (!dumped_file_paths.empty()) {
+    LOG_FIRST_N(INFO, 1) << "HloModule dump enabled with path prefix: "
+                         << prefix << ", suffix: " << suffix;
   }
   return dumped_file_paths;
 }
@@ -494,7 +510,7 @@ static void DumpHloModuleMetadata(
   std::string filename = absl::StrFormat("module_%04d.metadata.textproto",
                                          metadata.canonical_module_id());
   std::string content;
-  if (tensorflow::protobuf::TextFormat::PrintToString(metadata, &content)) {
+  if (tsl::protobuf::TextFormat::PrintToString(metadata, &content)) {
     DumpToFileInDirImpl(filename, content, opts);
   } else {
     LOG(ERROR) << "Failed to convert HloModuleMetadataProto to text.";
@@ -540,7 +556,7 @@ std::string TimestampFor(const HloModule& module) {
   }
   absl::MutexLock lock(&mu);
   auto timestamp_emplace = module_id_to_timestamp.try_emplace(
-      module.unique_id(), tensorflow::Env::Default()->NowMicros());
+      module.unique_id(), tsl::Env::Default()->NowMicros());
   return std::to_string(timestamp_emplace.first->second);
 }
 
@@ -598,27 +614,24 @@ void DumpToFileInDirOrStdout(const HloModule& module, string_view file_prefix,
   CanonicalDebugOptions opts(module.config().debug_options());
   if (opts.dumping_to_stdout()) return op->dump();
 
-  auto file_path =
-      GetDumpFilePath(FilenameFor(module, file_prefix, "mlir"), opts);
-  if (!file_path) return;
-
-  std::string error;
-  std::unique_ptr<llvm::ToolOutputFile> outputFile =
-      mlir::openOutputFile(llvm::SmallString<32>(*file_path), &error);
-  if (!outputFile) {
-    LOG(ERROR) << "Error: " << error << std::endl
-               << "Failed to open file: " << *file_path;
-    return;
+  mlir::OpPrintingFlags print_flags = mlir::OpPrintingFlags().useLocalScope();
+  // Enable debug info so that it is easier to see the corresponding HLO node.
+  if (file_prefix == "lmhlo") {
+    print_flags.enableDebugInfo(/*enable=*/true,
+                                /*prettyForm=*/opts.dump_mlir_pretty_form);
   }
-
-  op->print(outputFile->os(), mlir::OpPrintingFlags().useLocalScope());
-  outputFile->keep();
+  std::string content;
+  llvm::raw_string_ostream string_stream(content);
+  op->print(string_stream, print_flags);
+  DumpToFileInDirOrStdoutImpl(FilenameFor(module, file_prefix, "mlir"), content,
+                              opts);
 }
 
-void DumpExecutionOptions(const ExecutionOptions& execution_options,
-                          const DebugOptions& debug_options) {
+void DumpProtobufToFile(const tsl::protobuf::Message& proto,
+                        const DebugOptions& debug_options,
+                        absl::string_view filename) {
   CanonicalDebugOptions opts(debug_options);
-  tensorflow::Env* env = tensorflow::Env::Default();
+  tsl::Env* env = tsl::Env::Default();
   const std::string& dir = opts.dump_to;
   if (!env->IsDirectory(dir).ok()) {
     auto status = env->RecursivelyCreateDir(dir);
@@ -629,14 +642,12 @@ void DumpExecutionOptions(const ExecutionOptions& execution_options,
     }
   }
   if (env->IsDirectory(dir).ok()) {
-    std::string filename = tensorflow::io::JoinPath(dir, "execution_options");
+    const std::string path = tsl::io::JoinPath(dir, filename);
     Status status;
     if (opts.dump_as_text) {
-      status = tensorflow::WriteTextProto(env, absl::StrCat(filename, ".txt"),
-                                          execution_options);
+      status = tsl::WriteTextProto(env, absl::StrCat(path, ".txt"), proto);
     } else {
-      status = tensorflow::WriteBinaryProto(env, absl::StrCat(filename, ".pb"),
-                                            execution_options);
+      status = tsl::WriteBinaryProto(env, absl::StrCat(path, ".pb"), proto);
     }
     if (!status.ok()) {
       LOG(ERROR) << "Could not write XLA debug data to " << filename << ": "
@@ -645,11 +656,19 @@ void DumpExecutionOptions(const ExecutionOptions& execution_options,
   }
 }
 
+void DumpPerModuleProtobufToFile(const HloModule& module,
+                                 const tsl::protobuf::Message& proto,
+                                 const DebugOptions& debug_options,
+                                 absl::string_view name) {
+  const std::string filename = FilenameFor(module, TimestampFor(module), name);
+  DumpProtobufToFile(proto, debug_options, filename);
+}
+
 void DumpHloModuleIfEnabled(const HloModule& module, string_view name) {
   CanonicalDebugOptions opts(module.config().debug_options());
   if (opts.should_dump_module(module.name())) {
-    DumpHloModuleImpl(module, /*buffer_assn=*/nullptr, /*profile=*/nullptr,
-                      TimestampFor(module), name, opts);
+    DumpHloModuleImpl(module, /*buffer_assn=*/nullptr, TimestampFor(module),
+                      name, opts);
   }
 }
 
@@ -658,18 +677,7 @@ void DumpHloModuleIfEnabled(const HloModule& module,
                             string_view name) {
   CanonicalDebugOptions opts(module.config().debug_options());
   if (opts.should_dump_module(module.name())) {
-    DumpHloModuleImpl(module, &buffer_assn, /*profile=*/nullptr,
-                      TimestampFor(module), name, opts);
-  }
-}
-
-void DumpHloModuleIfEnabled(const HloModule& module,
-                            const HloExecutionProfile& profile,
-                            string_view name) {
-  CanonicalDebugOptions opts(module.config().debug_options());
-  if (opts.should_dump_module(module.name())) {
-    DumpHloModuleImpl(module, /*buffer_assn=*/nullptr, &profile,
-                      TimestampFor(module), name, opts);
+    DumpHloModuleImpl(module, &buffer_assn, TimestampFor(module), name, opts);
   }
 }
 
@@ -705,8 +713,8 @@ std::vector<std::string> DumpHloModuleBetweenPassesIfEnabled(
   std::string filename_suffix =
       StrFormat("%04d.%s.after_%s.before_%s", step_number, pipeline_name,
                 after_pass_name, before_pass_name);
-  return DumpHloModuleImpl(module, /*buffer_assn=*/nullptr, /*profile=*/nullptr,
-                           timestamp, filename_suffix, opts);
+  return DumpHloModuleImpl(module, /*buffer_assn=*/nullptr, timestamp,
+                           filename_suffix, opts);
 }
 
 void DumpHloModuleDuringPassIfEnabled(string_view pass_name,
@@ -723,8 +731,8 @@ void DumpHloModuleDuringPassIfEnabled(string_view pass_name,
 
   std::string filename_suffix =
       StrFormat("%04d.%s.%s", step_number, pass_name, step_name);
-  DumpHloModuleImpl(module, /*buffer_assn=*/nullptr, /*profile=*/nullptr,
-                    timestamp, filename_suffix, opts);
+  DumpHloModuleImpl(module, /*buffer_assn=*/nullptr, timestamp, filename_suffix,
+                    opts);
 }
 
 void DumpHloSnapshotIfEnabled(const HloModule& module,
@@ -741,7 +749,7 @@ void DumpHloSnapshotIfEnabled(const HloModule& module,
     absl::MutexLock lock(&mu);
     execution_count = module_id_to_execution_count[module.unique_id()]++;
     auto timestamp_emplace = module_id_to_timestamp.try_emplace(
-        module.unique_id(), tensorflow::Env::Default()->NowMicros());
+        module.unique_id(), tsl::Env::Default()->NowMicros());
     timestamp = timestamp_emplace.first->second;
   }
   std::string filename =
@@ -750,11 +758,11 @@ void DumpHloSnapshotIfEnabled(const HloModule& module,
              ".hlo_snapshot.pb");
   if (opts.dumping_to_stdout()) {
     LOG(ERROR) << "Refusing to write HLO snapshot proto for " << filename
-               << " to stdout.  Pass --xla_dump_to=<path> to write to a file.";
+               << " to stdout. Pass --xla_dump_to=<path> to write to a file.";
     return;
   }
   std::string pb;
-  if (!tensorflow::SerializeToStringDeterministic(snapshot, &pb)) {
+  if (!tsl::SerializeToStringDeterministic(snapshot, &pb)) {
     LOG(ERROR) << "Failed to serialize HLO snapshot proto " << filename;
   }
   DumpToFileInDirImpl(filename, pb, opts);
@@ -782,11 +790,11 @@ void DumpHloSnapshotIfEnabled(const HloSnapshot& snapshot,
                                    name, execution_count);
   if (canonical_opts.dumping_to_stdout()) {
     LOG(ERROR) << "Refusing to write HLO snapshot proto for " << filename
-               << " to stdout.  Pass --xla_dump_to=<path> to write to a file.";
+               << " to stdout. Pass --xla_dump_to=<path> to write to a file.";
     return;
   }
   std::string pb;
-  if (!tensorflow::SerializeToStringDeterministic(snapshot, &pb)) {
+  if (!tsl::SerializeToStringDeterministic(snapshot, &pb)) {
     LOG(ERROR) << "Failed to serialize HLO snapshot proto " << filename;
   }
   DumpToFileInDirImpl(filename, pb, canonical_opts);
@@ -800,7 +808,7 @@ void DumpHloModuleMetadataIfEnabled(const std::vector<HloModule*>& modules) {
       continue;
     }
     DumpHloModuleMetadata(module->metadata().proto(), opts, &dumped_module_ids);
-    const absl::optional<HloModuleMetadataProto>& prepartitioning_metadata =
+    const std::optional<HloModuleMetadataProto>& prepartitioning_metadata =
         module->metadata().prepartitioning_metadata();
     if (prepartitioning_metadata.has_value()) {
       DumpHloModuleMetadata(*prepartitioning_metadata, opts,

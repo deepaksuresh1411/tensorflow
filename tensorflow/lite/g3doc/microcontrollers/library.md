@@ -30,7 +30,7 @@ interpreter are located in the root of the project, accompanied by tests:
     uses a lot of memory. In production applications, you should use
     `micro_mutable_op_resolver.h` to pull in only the operations your model
     needs.
--   [`micro_error_reporter.h`](https://github.com/tensorflow/tflite-micro/blob/main/tensorflow/lite/micro/micro_error_reporter.h)
+-   [`micro_error_reporter.h`](https://github.com/tensorflow/tflite-micro/blob/main/tensorflow/lite/micro/tflite_bridge/micro_error_reporter.h)
     outputs debug information.
 -   [`micro_interpreter.h`](https://github.com/tensorflow/tflite-micro/blob/main/tensorflow/lite/micro/micro_interpreter.h)
     contains code to handle and run models.
@@ -60,7 +60,7 @@ instructions in this section.
 ### Use the Arduino library
 
 If you are using Arduino, the *Hello World* example is included in the
-`Arduino_TensorFlowLite` Arduino library, which you can download from the
+`Arduino_TensorFlowLite` Arduino library, which you can manually install in the
 Arduino IDE and in [Arduino Create](https://create.arduino.cc/).
 
 Once the library has been added, go to `File -> Examples`. You should see an
@@ -75,8 +75,8 @@ that contain all of the necessary source files, using a `Makefile`. The current
 supported environments are Keil, Make, and Mbed.
 
 To generate these projects with Make, clone the
-[TensorFlow repository](http://github.com/tensorflow/tensorflow) and run the
-following command:
+[TensorFlow/tflite-micro repository](https://github.com/tensorflow/tflite-micro)
+and run the following command:
 
 ```bash
 make -f tensorflow/lite/micro/tools/make/Makefile generate_projects
@@ -84,12 +84,12 @@ make -f tensorflow/lite/micro/tools/make/Makefile generate_projects
 
 This will take a few minutes, since it has to download some large toolchains for
 the dependencies. Once it has finished, you should see some folders created
-inside a path like `tensorflow/lite/micro/tools/make/gen/linux_x86_64/prj/` (the
+inside a path like `gen/linux_x86_64/prj/` (the
 exact path depends on your host operating system). These folders contain the
 generated project and source files.
 
 After running the command, you'll be able to find the *Hello World* projects in
-`tensorflow/lite/micro/tools/make/gen/linux_x86_64/prj/hello_world`. For
+`gen/linux_x86_64/prj/hello_world`. For
 example, `hello_world/keil` will contain the Keil project.
 
 ## Run the tests
@@ -169,9 +169,6 @@ encourage pull requests for new optimized implementations.
 
 ## Generate the Arduino library
 
-A nightly build of the Arduino library is available via the Arduino IDE's
-library manager.
-
 If you need to generate a new build of the library, you can run the following
 script from the TensorFlow repository:
 
@@ -180,10 +177,10 @@ script from the TensorFlow repository:
 ```
 
 The resulting library can be found in
-`tensorflow/lite/micro/tools/make/gen/arduino_x86_64/prj/tensorflow_lite.zip`.
+`gen/arduino_x86_64/prj/tensorflow_lite.zip`.
 
 ## Port to new devices
 
 Guidance on porting TensorFlow Lite for Microcontrollers to new platforms and
 devices can be found in
-[`micro/README.md`](https://github.com/tensorflow/tflite-micro/blob/main/tensorflow/lite/micro/README.md).
+[`micro/docs/new_platform_support.md`](https://github.com/tensorflow/tflite-micro/blob/main/tensorflow/lite/micro/docs/new_platform_support.md).

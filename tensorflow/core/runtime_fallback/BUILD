@@ -4,6 +4,7 @@ load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 package_group(
     name = "internal",
     packages = [
+        "//tensorflow/compiler/mlir/tfrt/tests/tfrt_fallback/...",
         "//tensorflow/core/runtime_fallback/...",
     ] + if_google([
         "//learning/brain/experimental/mlir/tflite/tfmrt/...",
@@ -14,6 +15,7 @@ package_group(
 )
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [":internal"],
     licenses = ["notice"],
 )
@@ -27,23 +29,22 @@ tf_cc_binary(
     tags = ["no_oss"],
     deps = [
         ":bef_executor_lib",
-        "//tensorflow/core/platform:stream_executor",
         "@com_google_absl//absl/strings",
+        "//tensorflow/compiler/mlir/tfrt:tf_jitrt_kernels_alwayslink",
+        "//tensorflow/core/platform:stream_executor",
+        "//tensorflow/core/runtime_fallback/conversion:conversion_alwayslink",
         "//tensorflow/core/runtime_fallback/kernel:kernel_fallback_kernels_alwayslink",
         "//tensorflow/core/runtime_fallback/kernel:kernel_fallback_op_handler",
         # copybara:uncomment "//tensorflow/core/runtime_fallback/test:forwarding_test_kernels",
         # copybara:uncomment "//tensorflow/core/runtime_fallback/test:tfrt_forwarding_kernels_alwayslink",
-        "//tensorflow/core/runtime_fallback/conversion:conversion_alwayslink",
-        "//tensorflow/compiler/mlir/tfrt:tf_jitrt_kernels_alwayslink",
         "@tf_runtime//:basic_kernels_alwayslink",
         "@tf_runtime//:core_runtime_alwayslink",
         "@tf_runtime//:hostcontext_alwayslink",
         "@tf_runtime//:tensor_alwayslink",
         "@tf_runtime//:test_kernels_alwayslink",
-        "@tf_runtime//:data_alwayslink",
-        # copybara:uncomment "@tf_runtime//backends/cpu:proto_alwayslink",
-        # copybara:uncomment "@tf_runtime//backends/cpu:image_alwayslink",
         "@tf_runtime//backends/cpu:core_runtime_alwayslink",
+        # copybara:uncomment "@tf_runtime//backends/cpu:image_alwayslink",
+        # copybara:uncomment "@tf_runtime//backends/cpu:proto_alwayslink",
         "@tf_runtime//backends/cpu:test_ops_alwayslink",
         "@tf_runtime//backends/jitrt:jitrt_corert_kernels_alwayslink",
     ] + select({
@@ -98,9 +99,9 @@ cc_library(
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
-        "//tensorflow/core/tfrt/utils:thread_pool",
         "//tensorflow/core/runtime_fallback/runtime:runtime_fallback_alwayslink",
         "//tensorflow/core/runtime_fallback/util:fallback_test_util",
+        "//tensorflow/core/tfrt/utils:thread_pool",
         "@tf_runtime//:bef_executor_driver",
         "@tf_runtime//:hostcontext_alwayslink",
         "@tf_runtime//:io_alwayslink",
@@ -112,87 +113,4 @@ cc_library(
             "//tensorflow/core/platform:platform_port",
         ],
     }),
-)
-
-tf_cc_binary(
-    name = "tfrt_fallback_opt",
-    srcs = [
-        "tfrt_fallback_opt.cc",
-    ],
-    deps = [
-        ":tfrt_fallback_async_opdefs",
-        ":tfrt_fallback_opdefs",
-        ":tfrt_fallback_sync_opdefs",
-        "@llvm-project//mlir:MlirOptLib",
-        "@tf_runtime//:init_tfrt_dialects",
-    ],
-)
-
-tf_cc_binary(
-    name = "tfrt_fallback_translate",
-    srcs = [
-        "tfrt_fallback_translate_registration.cc",
-    ],
-    deps = [
-        ":tfrt_fallback_async_opdefs",
-        ":tfrt_fallback_opdefs",
-        ":tfrt_fallback_registration",
-        ":tfrt_fallback_sync_opdefs",
-        "@llvm-project//mlir:Translation",
-        "//tensorflow/compiler/mlir/tfrt:tf_jitrt_registration",
-        "//tensorflow/compiler/mlir/tensorflow:tensorflow",
-        "@tf_runtime//:init_tfrt_dialects",
-        "@tf_runtime//:mlirtobef_translate",
-    ] + if_google(
-        ["//third_party/tf_runtime_llvm:tfrt_translate_main"],
-        ["@tf_runtime//third_party/llvm_derived:tfrt_translate_main"],
-    ),
-)
-
-cc_library(
-    name = "tfrt_fallback_registration",
-    srcs = [
-        "tfrt_fallback_registration.cc",
-    ],
-    hdrs = [
-        "tfrt_fallback_registration.h",
-    ],
-    visibility = if_google([
-        "//learning/brain/experimental/tfrt/distributed_runtime:__pkg__",
-        "//learning/brain/experimental/tfrt/visualization:__pkg__",
-        # Allow visibility from the mlir language server.
-        "//learning/brain/mlir/mlir_lsp_server:__pkg__",
-    ]),
-    deps = [
-        ":tfrt_fallback_async_opdefs",
-        ":tfrt_fallback_opdefs",
-        ":tfrt_fallback_sync_opdefs",
-        "@llvm-project//mlir:IR",
-    ],
-)
-
-alias(
-    name = "tfrt_fallback_async_opdefs",
-    actual = "//tensorflow/core/runtime_fallback/opdefs:tfrt_fallback_async_opdefs",
-    visibility = [
-        ":internal",
-        "//tensorflow/compiler/mlir/tfrt:__subpackages__",
-        "//tensorflow/core/tfrt/saved_model:__pkg__",
-    ],
-)
-
-alias(
-    name = "tfrt_fallback_opdefs",
-    actual = "//tensorflow/core/runtime_fallback/opdefs:tfrt_fallback_opdefs",
-    visibility = [
-        ":internal",
-        "//tensorflow/compiler/mlir/tfrt:__subpackages__",
-        "//tensorflow/core/tfrt/saved_model:__pkg__",
-        "//third_party/tf_runtime_google:__subpackages__",
-    ],
-)
-
-alias(
-    name = "tfrt_fallback_sync_opdefs",
-    actual = "//tensorflow/core/runtime_fallback/opdefs:tfrt_fallback_sync_opdefs",
 )

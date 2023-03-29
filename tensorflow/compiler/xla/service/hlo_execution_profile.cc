@@ -16,14 +16,14 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_execution_profile.h"
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
-#include "absl/memory/memory.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
+#include "tensorflow/compiler/xla/hlo/ir/hlo_module.h"
 #include "tensorflow/compiler/xla/service/hlo_execution_profile_data.pb.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
-#include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/service/human_readable_profile_builder.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/util.h"
@@ -50,14 +50,14 @@ HloProfileIndexMap::HloProfileIndexMap(
 std::unique_ptr<HloProfilePrinterData> CreateHloProfilePrinterData(
     const HloProfileIndexMap& hlo_profile_index_map,
     const HloCostAnalysis& cost_analysis,
-    const std::string& entry_computation_name) {
+    absl::string_view entry_computation_name) {
   using HloComputationInfo = HloProfilePrinterData::HloComputationInfo;
   using HloInstructionInfo = HloProfilePrinterData::HloInstructionInfo;
 
   size_t profile_counters_size = hlo_profile_index_map.total_count();
 
   std::unique_ptr<HloProfilePrinterData> profile_printer_data =
-      absl::make_unique<HloProfilePrinterData>();
+      std::make_unique<HloProfilePrinterData>();
   profile_printer_data->set_profile_counters_size(profile_counters_size);
   profile_printer_data->mutable_computation_infos()->Reserve(
       hlo_profile_index_map.computation_count());
@@ -87,7 +87,7 @@ std::unique_ptr<HloProfilePrinterData> CreateHloProfilePrinterData(
     HloComputationInfo* computation_info =
         profile_printer_data->add_computation_infos();
 
-    computation_info->set_name(computation->name());
+    *computation_info->mutable_name() = std::string(computation->name());
     computation_info->set_profile_index(pair.second);
     computation_info->mutable_instruction_infos()->Reserve(
         computation->instruction_count());
@@ -117,7 +117,8 @@ std::unique_ptr<HloProfilePrinterData> CreateHloProfilePrinterData(
         {pair.first, pair.second});
   }
 
-  profile_printer_data->set_entry_computation(entry_computation_name);
+  *profile_printer_data->mutable_entry_computation() =
+      std::string(entry_computation_name);
 
   return profile_printer_data;
 }

@@ -31,8 +31,11 @@ limitations under the License.
 #include "llvm/IR/Value.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/IR/Value.h"  // from @llvm-project
+#include "tensorflow/compiler/xla/hlo/ir/hlo_instruction.h"
 #include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_module_config.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
@@ -45,31 +48,26 @@ class TargetOptions;
 namespace xla {
 namespace llvm_ir {
 
-// Dump the given LLVM entity to a string. This works for Types and Values.
-template <typename T>
-std::string DumpToString(const T& entity) {
-  std::string buffer_string;
-  llvm::raw_string_ostream ostream(buffer_string);
-  entity.print(ostream);
-  ostream.flush();
-  return buffer_string;
-}
+// We have different DumpToString functions for each type for findability. We
+// use pointers / values based on the usual semantics of the parameter type.
 
-// Same as above, except that const T& does not work well with MILR because the
-// print methods are not const.
-template <typename T>
-std::string DumpToString(T& entity) {
-  std::string buffer_string;
-  llvm::raw_string_ostream ostream(buffer_string);
-  entity.print(ostream);
-  ostream.flush();
-  return buffer_string;
-}
+std::string DumpToString(const llvm::Module* module);
+std::string DumpToString(const llvm::Type* type);
+std::string DumpToString(const llvm::Value* value);
 
-// Dump the given LLVM module to a string. This requires a function distinct
-// from DumpToString because the signatures of the print() methods for Values
-// and Modules are slightly different.
-std::string DumpModuleToString(const llvm::Module& module);
+// This also works for mlir::Op<...> descendants, such as mlir::ModuleOp and
+// mlir::lmhlo::FusionOp.
+//
+// For findability:
+//   std::string DumpToString(mlir::Op<...>& op);
+//   std::string DumpToString(mlir::ModuleOp& module_op);
+//   std::string DumpToString(mlir::lmhlo::FusionOp& fusion_op);
+//
+// The `operation` parameter is not const, because the used print() method is
+// not const.
+std::string DumpToString(mlir::Operation* operation);
+std::string DumpToString(mlir::Type type);
+std::string DumpToString(mlir::Value value);
 
 // Constructs a human-friendly name from the given inputs.  The result is
 // suitable for use as an llvm::Value's name.
@@ -112,13 +110,13 @@ llvm::Value* EmitFloatMin(llvm::Value* lhs_value, llvm::Value* rhs_value,
                           absl::string_view name = "");
 
 // Convenience methods for emitting a GEP instruction that indexes into a buffer
-// (1-dimensional array), equivalent to array[index]. The type is automatically
-// determined from the element type of the array.  The int64_t index overload
+// (1-dimensional array), equivalent to array[index]. The element type of the
+// array must be explicitly passed in.  The int64_t index overload
 // wraps the index in a i64 llvm::Value.
-llvm::Value* EmitBufferIndexingGEP(llvm::Value* array, llvm::Value* index,
-                                   llvm::IRBuilder<>* b);
-llvm::Value* EmitBufferIndexingGEP(llvm::Value* array, int64_t index,
-                                   llvm::IRBuilder<>* b);
+llvm::Value* EmitBufferIndexingGEP(llvm::Value* array, llvm::Type* element_type,
+                                   llvm::Value* index, llvm::IRBuilder<>* b);
+llvm::Value* EmitBufferIndexingGEP(llvm::Value* array, llvm::Type* element_type,
+                                   int64_t index, llvm::IRBuilder<>* b);
 
 // Returns the LLVM type which represents the given XLA primitive type.
 llvm::Type* PrimitiveTypeToIrType(PrimitiveType element_type,

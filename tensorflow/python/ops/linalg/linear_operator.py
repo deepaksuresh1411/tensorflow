@@ -22,10 +22,12 @@ import numpy as np
 from tensorflow.python.framework import composite_tensor
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.framework import type_spec
+from tensorflow.python.framework import type_spec_registry
 from tensorflow.python.module import module
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops
@@ -36,11 +38,13 @@ from tensorflow.python.ops import variables
 from tensorflow.python.ops.linalg import linalg_impl as linalg
 from tensorflow.python.ops.linalg import linear_operator_algebra
 from tensorflow.python.ops.linalg import linear_operator_util
+from tensorflow.python.ops.linalg import slicing
 from tensorflow.python.platform import tf_logging as logging
-from tensorflow.python.training.tracking import data_structures
+from tensorflow.python.trackable import data_structures
 from tensorflow.python.util import deprecation
 from tensorflow.python.util import dispatch
 from tensorflow.python.util import nest
+from tensorflow.python.util import variable_utils
 from tensorflow.python.util.tf_export import tf_export
 
 __all__ = ["LinearOperator"]
@@ -418,7 +422,9 @@ class LinearOperator(
     # `shape` may be passed in if this can be pre-computed in a
     # more efficient manner, e.g. without excessive Tensor conversions.
     if self.tensor_rank is not None:
-      return ops.convert_to_tensor_v2_with_dispatch(self.tensor_rank)
+      return tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          self.tensor_rank
+      )
     else:
       shape = self.shape_tensor() if shape is None else shape
       return array_ops.size(shape)
@@ -462,7 +468,7 @@ class LinearOperator(
     # more efficient manner, e.g. without excessive Tensor conversions.
     dim_value = tensor_shape.dimension_value(self.domain_dimension)
     if dim_value is not None:
-      return ops.convert_to_tensor_v2_with_dispatch(dim_value)
+      return tensor_conversion.convert_to_tensor_v2_with_dispatch(dim_value)
     else:
       shape = self.shape_tensor() if shape is None else shape
       return shape[-1]
@@ -506,7 +512,7 @@ class LinearOperator(
     # more efficient manner, e.g. without excessive Tensor conversions.
     dim_value = tensor_shape.dimension_value(self.range_dimension)
     if dim_value is not None:
-      return ops.convert_to_tensor_v2_with_dispatch(dim_value)
+      return tensor_conversion.convert_to_tensor_v2_with_dispatch(dim_value)
     else:
       shape = self.shape_tensor() if shape is None else shape
       return shape[-2]
@@ -674,7 +680,7 @@ class LinearOperator(
         return linear_operator_algebra.matmul(left_operator, right_operator)
 
     with self._name_scope(name):  # pylint: disable=not-callable
-      x = ops.convert_to_tensor_v2_with_dispatch(x, name="x")
+      x = tensor_conversion.convert_to_tensor_v2_with_dispatch(x, name="x")
       self._check_input_dtype(x)
 
       self_dim = -2 if adjoint else -1
@@ -721,7 +727,7 @@ class LinearOperator(
       A `Tensor` with shape `[..., M]` and same `dtype` as `self`.
     """
     with self._name_scope(name):  # pylint: disable=not-callable
-      x = ops.convert_to_tensor_v2_with_dispatch(x, name="x")
+      x = tensor_conversion.convert_to_tensor_v2_with_dispatch(x, name="x")
       self._check_input_dtype(x)
       self_dim = -2 if adjoint else -1
       tensor_shape.dimension_at_index(
@@ -867,7 +873,9 @@ class LinearOperator(
         return linear_operator_algebra.solve(left_operator, right_operator)
 
     with self._name_scope(name):  # pylint: disable=not-callable
-      rhs = ops.convert_to_tensor_v2_with_dispatch(rhs, name="rhs")
+      rhs = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          rhs, name="rhs"
+      )
       self._check_input_dtype(rhs)
 
       self_dim = -1 if adjoint else -2
@@ -924,7 +932,9 @@ class LinearOperator(
       NotImplementedError:  If `self.is_non_singular` or `is_square` is False.
     """
     with self._name_scope(name):  # pylint: disable=not-callable
-      rhs = ops.convert_to_tensor_v2_with_dispatch(rhs, name="rhs")
+      rhs = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+          rhs, name="rhs"
+      )
       self._check_input_dtype(rhs)
       self_dim = -1 if adjoint else -2
       tensor_shape.dimension_at_index(
@@ -1087,7 +1097,7 @@ class LinearOperator(
       A `Tensor` with broadcast shape and same `dtype` as `self`.
     """
     with self._name_scope(name):  # pylint: disable=not-callable
-      x = ops.convert_to_tensor_v2_with_dispatch(x, name="x")
+      x = tensor_conversion.convert_to_tensor_v2_with_dispatch(x, name="x")
       self._check_input_dtype(x)
       return self._add_to_tensor(x)
 
@@ -1190,6 +1200,47 @@ class LinearOperator(
     # class `CompositeTensor` can be constructed and passed to the
     # `@make_composite_tensor` decorator.
     pass
+
+  def _convert_variables_to_tensors(self):
+    """Recursively converts ResourceVariables in the LinearOperator to Tensors.
+
+    The usage of `self._type_spec._from_components` violates the contract of
+    `CompositeTensor`, since it is called on a different nested structure
+    (one containing only `Tensor`s) than `self.type_spec` specifies (one that
+    may contain `ResourceVariable`s). Since `LinearOperator`'s
+    `_from_components` method just passes the contents of the nested structure
+    to `__init__` to rebuild the operator, and any `LinearOperator` that may be
+    instantiated with `ResourceVariables` may also be instantiated with
+    `Tensor`s, this usage is valid.
+
+    Returns:
+      tensor_operator: `self` with all internal Variables converted to Tensors.
+    """
+    # pylint: disable=protected-access
+    components = self._type_spec._to_components(self)
+    tensor_components = variable_utils.convert_variables_to_tensors(
+        components)
+    return self._type_spec._from_components(tensor_components)
+    # pylint: enable=protected-access
+
+  def __getitem__(self, slices):
+    return slicing.batch_slice(self, params_overrides={}, slices=slices)
+
+  @property
+  def _experimental_parameter_ndims_to_matrix_ndims(self):
+    """A dict of names to number of dimensions contributing to an operator.
+
+    This is a dictionary of parameter names to `int`s specifying the
+    number of right-most dimensions contributing to the **matrix** shape of the
+    densified operator.
+    If the parameter is a `Tensor`, this is mapped to an `int`.
+    If the parameter is a `LinearOperator` (called `A`), this specifies the
+    number of batch dimensions of `A` contributing to this `LinearOperator`s
+    matrix shape.
+    If the parameter is a structure, this is a structure of the same type of
+    `int`s.
+    """
+    return ()
 
 
 class _LinearOperatorSpec(type_spec.BatchableTypeSpec):
@@ -1296,7 +1347,7 @@ def make_composite_tensor(cls, module_name="tf.linalg"):
 
   spec_name = "{}Spec".format(cls.__name__)
   spec_type = type(spec_name, (_LinearOperatorSpec,), {"value_type": cls})
-  type_spec.register("{}.{}".format(module_name, spec_name))(spec_type)
+  type_spec_registry.register("{}.{}".format(module_name, spec_name))(spec_type)
   cls._type_spec = property(spec_type.from_operator)  # pylint: disable=protected-access
   return cls
 

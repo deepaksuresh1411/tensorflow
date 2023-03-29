@@ -32,6 +32,7 @@ from tensorflow.python.framework import errors
 from tensorflow.python.framework import func_graph
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.keras import backend
@@ -59,9 +60,9 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variables as tf_variables
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.platform import tf_logging
-from tensorflow.python.training.tracking import base as trackable
-from tensorflow.python.training.tracking import data_structures
-from tensorflow.python.training.tracking import tracking
+from tensorflow.python.trackable import autotrackable
+from tensorflow.python.trackable import base as trackable
+from tensorflow.python.trackable import data_structures
 from tensorflow.python.util import nest
 from tensorflow.tools.docs import doc_controls
 
@@ -691,10 +692,10 @@ class Layer(base_layer.Layer):
     # Accept NumPy and scalar inputs by converting to Tensors.
     if any(isinstance(x, (np.ndarray, float, int)) for x in input_list):
       def _convert_non_tensor(x):
-        # Don't call `ops.convert_to_tensor` on all `inputs` because
-        # `SparseTensors` can't be converted to `Tensor`.
+        # Don't call `tensor_conversion.convert_to_tensor` on all `inputs`
+        # because `SparseTensors` can't be converted to `Tensor`.
         if isinstance(x, (np.ndarray, float, int)):
-          return ops.convert_to_tensor_v2_with_dispatch(x)
+          return tensor_conversion.convert_to_tensor_v2_with_dispatch(x)
         return x
       inputs = nest.map_structure(_convert_non_tensor, inputs)
       input_list = nest.flatten(inputs)
@@ -1035,8 +1036,9 @@ class Layer(base_layer.Layer):
       if loss is None:
         return None  # Will be filtered out when computing the .losses property
       if not tensor_util.is_tf_type(loss):
-        loss = ops.convert_to_tensor_v2_with_dispatch(
-            loss, dtype=backend.floatx())
+        loss = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+            loss, dtype=backend.floatx()
+        )
       loss._unconditional_loss = (inputs is None)  # pylint: disable=protected-access
       return loss
 
@@ -1051,8 +1053,9 @@ class Layer(base_layer.Layer):
       if loss is None:
         continue
       if not tensor_util.is_tf_type(loss):
-        loss = ops.convert_to_tensor_v2_with_dispatch(
-            loss, dtype=backend.floatx())
+        loss = tensor_conversion.convert_to_tensor_v2_with_dispatch(
+            loss, dtype=backend.floatx()
+        )
       # TF Functions should take the eager path.
       if (tf_utils.is_symbolic_tensor(loss) and
           not base_layer_utils.is_in_tf_function()):
@@ -1213,7 +1216,7 @@ class Layer(base_layer.Layer):
       elif hasattr(x, 'op'):
         update = x.op
       else:
-        update = ops.convert_to_tensor_v2_with_dispatch(x)
+        update = tensor_conversion.convert_to_tensor_v2_with_dispatch(x)
 
       reachable = tf_utils.get_reachable_from_inputs(relevant_inputs, [update])
       update._unconditional_update = update not in reachable
@@ -2165,7 +2168,7 @@ class Layer(base_layer.Layer):
     # other attributes referencing it.
     reference_counts = self._obj_reference_counts
     if existing_value not in reference_counts:
-      super(tracking.AutoTrackable, self).__delattr__(name)  # pylint: disable=bad-super-call
+      super(autotrackable.AutoTrackable, self).__delattr__(name)  # pylint: disable=bad-super-call
       return
 
     reference_count = reference_counts[existing_value]
@@ -2173,24 +2176,24 @@ class Layer(base_layer.Layer):
       # There are other remaining references. We can't remove this object from
       # _layers etc.
       reference_counts[existing_value] = reference_count - 1
-      super(tracking.AutoTrackable, self).__delattr__(name)  # pylint: disable=bad-super-call
+      super(autotrackable.AutoTrackable, self).__delattr__(name)  # pylint: disable=bad-super-call
       return
     else:
       # This is the last remaining reference.
       del reference_counts[existing_value]
 
-    super(tracking.AutoTrackable, self).__delattr__(name)  # pylint: disable=bad-super-call
+    super(autotrackable.AutoTrackable, self).__delattr__(name)  # pylint: disable=bad-super-call
 
     if (isinstance(existing_value, Layer)
         or base_layer_utils.has_weights(existing_value)):
-      super(tracking.AutoTrackable, self).__setattr__(  # pylint: disable=bad-super-call
+      super(autotrackable.AutoTrackable, self).__setattr__(  # pylint: disable=bad-super-call
           '_self_tracked_trackables',
           [l for l in self._self_tracked_trackables if l is not existing_value])
     if isinstance(existing_value, tf_variables.Variable):
-      super(tracking.AutoTrackable, self).__setattr__(  # pylint: disable=bad-super-call
+      super(autotrackable.AutoTrackable, self).__setattr__(  # pylint: disable=bad-super-call
           '_trainable_weights',
           [w for w in self._trainable_weights if w is not existing_value])
-      super(tracking.AutoTrackable, self).__setattr__(  # pylint: disable=bad-super-call
+      super(autotrackable.AutoTrackable, self).__setattr__(  # pylint: disable=bad-super-call
           '_non_trainable_weights',
           [w for w in self._non_trainable_weights if w is not existing_value])
 
@@ -2200,7 +2203,7 @@ class Layer(base_layer.Layer):
         # Exclude @property.setters from tracking
         hasattr(self.__class__, name)):
       try:
-        super(tracking.AutoTrackable, self).__setattr__(name, value)  # pylint: disable=bad-super-call
+        super(autotrackable.AutoTrackable, self).__setattr__(name, value)  # pylint: disable=bad-super-call
       except AttributeError:
         raise AttributeError(
             ('Can\'t set the attribute "{}", likely because it conflicts with '
@@ -2267,7 +2270,7 @@ class Layer(base_layer.Layer):
 
     # TODO(b/180760306) Skip the auto trackable from tf.Module to keep status
     # quo. See the comment at __delattr__.
-    super(tracking.AutoTrackable, self).__setattr__(name, value)  # pylint: disable=bad-super-call
+    super(autotrackable.AutoTrackable, self).__setattr__(name, value)  # pylint: disable=bad-super-call
 
   # This is a hack so that the is_layer (within
   # training/trackable/layer_utils.py) check doesn't get the weights attr.

@@ -15,6 +15,7 @@
 
 import functools
 import gc
+import sys
 import weakref
 
 from absl.testing import parameterized
@@ -34,6 +35,7 @@ from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.module import module
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import custom_gradient
 from tensorflow.python.ops import gradient_checker_v2
 from tensorflow.python.ops import map_fn
@@ -83,7 +85,7 @@ def _jacfwd(f, primals):
               functools.partial(array_ops.reshape, shape=[-1]),
               _jvp(f, primals, nest.pack_sequence_as(primals,
                                                      tangent_mask))[1]))
-    jac_flat.append(array_ops.stack(jac_columns, axis=1))
+    jac_flat.append(array_ops_stack.stack(jac_columns, axis=1))
     tangent_mask[primal_index] = array_ops.zeros_like(primal)
   return nest.pack_sequence_as(primals, jac_flat)
 
@@ -337,13 +339,11 @@ class ForwardpropTest(test.TestCase, parameterized.TestCase):
 
   @test_util.assert_no_new_pyobjects_executing_eagerly
   def testFunctionCacheLimited(self):
-    # Every time this test is executed, it will create a slightly larger Tensor
-    # and push it through Add's gradient. Since we check for new pyobjects after
-    # the warmup, retracing each time without cleaning up old traces fails the
-    # test. It works because of experimental_relax_shapes.
-    for _ in range(forwardprop._TRACE_COUNT_LIMIT):
-      execution_count = getattr(self, "_execution_count", 0)
-      self._execution_count = execution_count + 1
+    # Every time this loop is executed, it will create a slightly larger Tensor
+    # and push it through Add's gradient.
+    # We run TRACE_COUNT_LIMIT x 2 so that it is tested with both
+    # experimental_relax_shapes on and off.
+    for execution_count in range(forwardprop._TRACE_COUNT_LIMIT*2):
       x = array_ops.zeros([execution_count])
       with forwardprop.ForwardAccumulator(x, array_ops.ones_like(x)) as acc:
         y = x + x
@@ -722,11 +722,11 @@ class ForwardpropTest(test.TestCase, parameterized.TestCase):
       with backprop.GradientTape() as gg:
         gg.watch(primals)
         out = fun(primals)
-      grad = array_ops.unstack(gg.gradient(out, primals))
+      grad = array_ops_stack.unstack(gg.gradient(out, primals))
     hessian = []
     for i in range(3):
       hessian.append(g.gradient(grad[i], primals))
-    hessian = array_ops.stack(hessian, axis=0)
+    hessian = array_ops_stack.stack(hessian, axis=0)
     backback_hvp = math_ops.tensordot(hessian, tangents, axes=1)
 
     self.assertAllClose(backback_hvp, forwardback_hvp_eager)
@@ -783,6 +783,10 @@ class ForwardpropTest(test.TestCase, parameterized.TestCase):
 
   @test_util.assert_no_new_pyobjects_executing_eagerly
   def testOpWithNoTrainableOutputs(self):
+    if sys.version_info.major == 3 and sys.version_info.minor == 11:
+      # TODO(b/264947738)
+      self.skipTest("Not working in Python 3.11")
+
     v = variables.Variable(1.)
     with forwardprop.ForwardAccumulator(v, 11.):
       v.assign_sub(0.5)
@@ -880,6 +884,9 @@ class ForwardpropTest(test.TestCase, parameterized.TestCase):
 
   @test_util.assert_no_new_pyobjects_executing_eagerly
   def testVariableWatched(self):
+    if sys.version_info.major == 3 and sys.version_info.minor == 11:
+      # TODO(b/264947738)
+      self.skipTest("Not working in Python 3.11")
     v = variables.Variable([1., 2., 3.])
     with forwardprop.ForwardAccumulator(v, constant_op.constant([.1, -.2,
                                                                  .3])) as acc:

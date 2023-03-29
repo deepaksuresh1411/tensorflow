@@ -15,7 +15,7 @@
 """Tests for SessionManager."""
 
 import os
-
+from tensorflow.python.checkpoint import checkpoint_management
 from tensorflow.python.client import session as session_lib
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
@@ -23,12 +23,11 @@ from tensorflow.python.framework import errors_impl
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import test
-from tensorflow.python.training import checkpoint_management
 from tensorflow.python.training import saver as saver_lib
 from tensorflow.python.training import server_lib
 from tensorflow.python.training import session_manager
@@ -581,7 +580,7 @@ class SessionManagerTest(test.TestCase):
     # into an infinite recursion when the variable's initial_value involved
     # cyclic dependencies.
     with ops.Graph().as_default():
-      i = control_flow_ops.while_loop(lambda i: i < 1, lambda i: i + 1, [0])
+      i = while_loop.while_loop(lambda i: i < 1, lambda i: i + 1, [0])
       v = variables.VariableV1(array_ops.identity(i), name="v")
       with self.cached_session():
         self.assertEqual(False, variables.is_variable_initialized(v).eval())

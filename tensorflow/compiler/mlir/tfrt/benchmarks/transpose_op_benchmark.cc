@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <array>
+#include <optional>
 #include <string>
 
 #include "llvm/Support/FormatVariadic.h"
@@ -22,7 +23,7 @@ limitations under the License.
 namespace tensorflow {
 
 static const char* mlir_2d_input = R"(
-func @compute(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {{
+func.func @compute(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {{
     %0 = "tf.Const"()
          {{value = dense<[1, 0]> : tensor<2xi64>,
           device = "/job:localhost/replica:0/task:0/device:CPU:0"}
@@ -30,12 +31,12 @@ func @compute(%arg0: tensor<?x?xf32>) -> tensor<?x?xf32> {{
     %1 = "tf.Transpose"(%arg0, %0)
          {{device = "/job:localhost/replica:0/task:0/device:CPU:0"}
          : (tensor<?x?xf32>, tensor<2xi64>) -> tensor<?x?xf32>
-    return %1 : tensor<?x?xf32>
+    func.return %1 : tensor<?x?xf32>
   }
 )";
 
 static const char* mlir_3d_input = R"(
-func @compute(%arg0: tensor<?x?x?xf32>) -> tensor<?x?x?xf32> {{
+func.func @compute(%arg0: tensor<?x?x?xf32>) -> tensor<?x?x?xf32> {{
     %0 = "tf.Const"()
          {{value = dense<[{0}, {1}, {2}]> : tensor<3xi64>,
           device = "/job:localhost/replica:0/task:0/device:CPU:0"}
@@ -43,7 +44,7 @@ func @compute(%arg0: tensor<?x?x?xf32>) -> tensor<?x?x?xf32> {{
     %1 = "tf.Transpose"(%arg0, %0)
          {{device = "/job:localhost/replica:0/task:0/device:CPU:0"}
          : (tensor<?x?x?xf32>, tensor<3xi64>) -> tensor<?x?x?xf32>
-    return %1 : tensor<?x?x?xf32>
+    func.return %1 : tensor<?x?x?xf32>
   }
 )";
 
@@ -56,7 +57,7 @@ static std::string Transpose3D(std::array<int32_t, 3> perm) {
 template <int32_t size>
 static auto Shuffle(std::array<int32_t, size> perm) {
   return [perm](llvm::ArrayRef<Tensor> inputs,
-                llvm::Optional<Eigen::ThreadPoolDevice> device) {
+                std::optional<Eigen::ThreadPoolDevice> device) {
     std::array<int64_t, size> shuffled;
     for (unsigned d = 0; d < size; d++)
       shuffled[d] = inputs[0].dim_size(perm[d]);
@@ -66,7 +67,7 @@ static auto Shuffle(std::array<int32_t, size> perm) {
     auto in0 = inputs[0].tensor<float, size>();
     auto out0 = output.tensor<float, size>();
 
-    if (device.hasValue()) {
+    if (device.has_value()) {
       out0.device(*device) = in0.shuffle(perm);
     } else {
       out0 = in0.shuffle(perm);

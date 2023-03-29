@@ -25,6 +25,9 @@ limitations under the License.
 #include "tensorflow/core/graph/mkl_graph_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/util/mkl_util.h"
+#ifdef DNNL_AARCH64_USE_ACL
+#include "tensorflow/core/platform/mutex.h"
+#endif
 
 using dnnl::primitive_attr;
 using dnnl::prop_kind;
@@ -86,6 +89,9 @@ class MklReorderWithScalePrimitive : public MklPrimitive {
 
   void Execute(void* src_data, void* dst_data,
                std::shared_ptr<stream> reorder_stream) {
+#ifdef DNNL_AARCH64_USE_ACL
+    mutex_lock lock(primitive_execution_mu_);
+#endif
 #ifndef ENABLE_ONEDNN_OPENMP
     context_.src_mem->set_data_handle(src_data, *reorder_stream);
     context_.dst_mem->set_data_handle(dst_data, *reorder_stream);
@@ -149,6 +155,10 @@ class MklReorderWithScalePrimitive : public MklPrimitive {
     context_.prim_args.insert({DNNL_ARG_FROM, *context_.src_mem});
     context_.prim_args.insert({DNNL_ARG_TO, *context_.dst_mem});
   }
+
+#ifdef DNNL_AARCH64_USE_ACL
+  mutex primitive_execution_mu_;
+#endif
 };
 
 template <typename T>
@@ -261,6 +271,18 @@ class MklQuantizeV2Op : public OpKernel {
                     "Scalar calculation in MKL is supported only for"
                     "MIN_FIRST mode for now."));
 
+    // Min and max values of input range should be scalar.
+    const Tensor& min_tensor = ctx->input(1);
+    const Tensor& max_tensor = ctx->input(2);
+    OP_REQUIRES(
+        ctx, TensorShapeUtils::IsScalar(min_tensor.shape()),
+        errors::InvalidArgument("`min_input` must be rank 0 but is rank ",
+                                min_tensor.dims()));
+    OP_REQUIRES(
+        ctx, TensorShapeUtils::IsScalar(max_tensor.shape()),
+        errors::InvalidArgument("`max_input` must be rank 0 but is rank ",
+                                max_tensor.dims()));
+
     auto cpu_engine = engine(engine::kind::cpu, 0);
     const unsigned int src_idx = 0;
     const Tensor& src_tensor = MklGetInput(ctx, src_idx);
@@ -294,8 +316,8 @@ class MklQuantizeV2Op : public OpKernel {
     T* out_data = output_tensor->flat<T>().data();
 
     out_data[0] = (src_data[0] - min_range) * scale_factor;
-    output_min_tensor->flat<float>()(0) = min_range;
-    output_max_tensor->flat<float>()(0) = max_range;
+    output_min_tensor->scalar<float>()() = min_range;
+    output_max_tensor->scalar<float>()() = max_range;
 
     return;
   }
@@ -303,8 +325,8 @@ class MklQuantizeV2Op : public OpKernel {
   void Compute(OpKernelContext* ctx) override {
     const unsigned int src_idx = 0;
     const Tensor& input = ctx->input(src_idx);
-    const float input_min_range = ctx->input(1).flat<float>()(0);
-    const float input_max_range = ctx->input(2).flat<float>()(0);
+    const float input_min_range = ctx->input(1).scalar<float>()();
+    const float input_max_range = ctx->input(2).scalar<float>()();
     float min_range = std::min(0.0f, input_min_range);
     float max_range;
     OP_REQUIRES(ctx, (input_max_range >= input_min_range),
@@ -447,7 +469,7 @@ class MklQuantizeV2Op : public OpKernel {
         // If it is signed, we try to keep 0.0 being 0 and drop one bucket. For
         // example, if it is 8 bits, we have the range [-127, 127]. So for input
         // range of [-x, x], the scale should be 254/(2*x).
-        target_range = static_cast<float>((uint64_t{1} << (num_bits - 1)) - 1);
+        target_range = static_cast<float>((uint64_t{1} << num_bits) - 1) / 2.;
       } else {
         max_range = max_abs;
         min_range = 0.0;
@@ -478,8 +500,8 @@ class MklQuantizeV2Op : public OpKernel {
     reorder_prim->Execute(src.GetUsrMemDataHandle(), dst.GetUsrMemDataHandle(),
                           cpu_stream);
 
-    output_min_tensor->flat<float>()(0) = min_range;
-    output_max_tensor->flat<float>()(0) = max_range;
+    output_min_tensor->scalar<float>()() = min_range;
+    output_max_tensor->scalar<float>()() = max_range;
   }
 
  private:

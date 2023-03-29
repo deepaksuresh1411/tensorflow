@@ -16,7 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_SERVICE_ASYNC_COLLECTIVE_CREATOR_H_
 #define TENSORFLOW_COMPILER_XLA_SERVICE_ASYNC_COLLECTIVE_CREATOR_H_
 
-#include <functional>
+#include <utility>
 
 #include "tensorflow/compiler/xla/service/hlo_pass_interface.h"
 
@@ -26,33 +26,25 @@ namespace xla {
 // all-reduce-done.
 class AsyncCollectiveCreator : public HloModulePass {
  public:
-  using CreatorConfigQuery = std::function<bool(const HloInstruction*)>;
   struct CollectiveCreatorConfig {
-    CreatorConfigQuery convert_all_reduce = [](const HloInstruction*) {
-      return false;
-    };
-    CreatorConfigQuery convert_all_gather = [](const HloInstruction*) {
-      return false;
-    };
-    CreatorConfigQuery convert_collective_permute = [](const HloInstruction*) {
-      return false;
-    };
+    HloPredicate convert_all_reduce = HloPredicateFalse;
+    HloPredicate convert_all_gather = HloPredicateFalse;
+    HloPredicate convert_collective_permute = HloPredicateFalse;
+    HloPredicate convert_all_to_all = HloPredicateFalse;
   };
   explicit AsyncCollectiveCreator(CollectiveCreatorConfig creator_config)
-      : convert_all_reduce_(creator_config.convert_all_reduce),
-        convert_all_gather_(creator_config.convert_all_gather),
-        convert_collective_permute_(creator_config.convert_collective_permute) {
-  }
+      : config_(std::move(creator_config)) {}
   absl::string_view name() const override { return "async-collective-creator"; }
 
-  StatusOr<bool> Run(HloModule* module) override;
+  using HloPassInterface::Run;
+  StatusOr<bool> Run(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  private:
-  CreatorConfigQuery convert_all_reduce_;
-  CreatorConfigQuery convert_all_gather_;
-  CreatorConfigQuery convert_collective_permute_;
+  CollectiveCreatorConfig config_;
 };
 
 }  // namespace xla
 
-#endif  // TENSORFLOW_COMPILER_XLA_SERVICE_ASYNC_ALL_REDUCE_CREATOR_H_
+#endif  // TENSORFLOW_COMPILER_XLA_SERVICE_ASYNC_COLLECTIVE_CREATOR_H_

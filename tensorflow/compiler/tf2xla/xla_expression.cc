@@ -112,7 +112,7 @@ xla::XlaOp XlaExpression::AsXlaOp(xla::XlaBuilder* builder) const {
   });
 }
 
-StatusOr<Tensor> XlaExpression::ResolveDynamism(xla::Client* client) const {
+StatusOr<Tensor> XlaExpression::ResolveDynamism() const {
   switch (kind()) {
     case Kind::kConstant: {
       // Constant values are considered static.
@@ -133,9 +133,6 @@ StatusOr<Tensor> XlaExpression::ResolveDynamism(xla::Client* client) const {
           HumanString());
   }
 
-  if (!client)
-    return errors::InvalidArgument("client is required to resolve constant");
-
   TF_ASSIGN_OR_RETURN(TensorShape shape, GetShape());
 
   // The XLA layout is specified minor to major, and TensorFlow uses a major to
@@ -150,7 +147,7 @@ StatusOr<Tensor> XlaExpression::ResolveDynamism(xla::Client* client) const {
   return tensor;
 }
 
-StatusOr<absl::optional<Tensor>> XlaExpression::ResolveConstant(
+StatusOr<std::optional<Tensor>> XlaExpression::ResolveConstant(
     xla::Client* client, bool dynamic_dimension_is_minus_one,
     xla::ValueInferenceMode mode) const {
   switch (kind()) {
@@ -180,7 +177,7 @@ StatusOr<absl::optional<Tensor>> XlaExpression::ResolveConstant(
     TF_ASSIGN_OR_RETURN(xla::OptionalLiteral literal,
                         value_inference.AnalyzeConstant(handle(), mode));
     if (!literal.GetValue().has_value()) {
-      return {absl::nullopt};
+      return {std::nullopt};
     }
     Tensor tensor;
     TF_RETURN_IF_ERROR(LiteralToHostTensor(
@@ -191,7 +188,7 @@ StatusOr<absl::optional<Tensor>> XlaExpression::ResolveConstant(
   TF_ASSIGN_OR_RETURN(bool is_constant,
                       handle().builder()->IsConstant(handle()));
   if (!is_constant) {
-    return {absl::nullopt};
+    return {std::nullopt};
   }
 
   if (!client)

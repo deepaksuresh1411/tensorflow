@@ -55,7 +55,7 @@ class AssertPrevDatasetParams : public DatasetParams {
       : DatasetParams(std::move(output_dtypes), std::move(output_shapes),
                       std::move(node_name)),
         transformations_(transformations) {
-    input_dataset_params_.push_back(absl::make_unique<T>(input_dataset_params));
+    input_dataset_params_.push_back(std::make_unique<T>(input_dataset_params));
     iterator_prefix_ =
         name_utils::IteratorPrefix(input_dataset_params.dataset_type(),
                                    input_dataset_params.iterator_prefix());
@@ -71,13 +71,13 @@ class AssertPrevDatasetParams : public DatasetParams {
     input_names->reserve(input_dataset_params_.size() + 1);
     input_names->emplace_back(AssertPrevDatasetOp::kInputDataset);
     input_names->emplace_back(AssertPrevDatasetOp::kTransformations);
-    return Status::OK();
+    return OkStatus();
   }
 
   Status GetAttributes(AttributeVector* attr_vector) const override {
     *attr_vector = {{AssertPrevDatasetOp::kOutputShapes, output_shapes_},
                     {AssertPrevDatasetOp::kOutputTypes, output_dtypes_}};
-    return Status::OK();
+    return OkStatus();
   }
 
   string dataset_type() const override {
@@ -265,13 +265,13 @@ ITERATOR_SAVE_AND_RESTORE_TEST_P(AssertPrevDatasetOpTest,
 TEST_F(AssertPrevDatasetOpTest, InvalidArguments) {
   auto dataset_params = InvalidAssertPrevDatasetParams();
   EXPECT_EQ(Initialize(dataset_params).code(),
-            tensorflow::error::INVALID_ARGUMENT);
+            absl::StatusCode::kInvalidArgument);
 }
 
 TEST_F(AssertPrevDatasetOpTest, ShortAssertPrev) {
   auto dataset_params = ShortAssertPrevDatasetParams();
   EXPECT_EQ(Initialize(dataset_params).code(),
-            tensorflow::error::INVALID_ARGUMENT);
+            absl::StatusCode::kInvalidArgument);
 }
 
 }  // namespace

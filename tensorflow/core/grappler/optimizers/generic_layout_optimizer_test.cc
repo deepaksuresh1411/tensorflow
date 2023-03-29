@@ -32,6 +32,7 @@ limitations under the License.
 #include "tensorflow/core/grappler/utils/graph_view.h"
 #include "tensorflow/core/grappler/utils/grappler_test.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/platform/tensor_float_32_utils.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -166,7 +167,7 @@ class GenericLayoutOptimizerTest : public GrapplerTest {
 
     if (gpu_available) {
       virtual_cluster_ =
-          absl::make_unique<SingleMachine>(/*timeout_s=*/10, 1, 1);
+          std::make_unique<SingleMachine>(/*timeout_s=*/10, 1, 1);
     } else {
       DeviceProperties cpu_device;
       cpu_device.set_type("CPU");
@@ -193,7 +194,11 @@ class GenericLayoutOptimizerTest : public GrapplerTest {
     TF_ASSERT_OK(virtual_cluster_->Provision());
   }
 
-  void TearDown() override { TF_ASSERT_OK(virtual_cluster_->Shutdown()); }
+  void TearDown() override {
+    TF_ASSERT_OK(virtual_cluster_->Shutdown());
+    // Turn TensorFloat-32 back on since some tests disable it
+    tsl::enable_tensor_float_32_execution(true);
+  }
 
   std::unique_ptr<Cluster> virtual_cluster_;
 };
@@ -242,34 +247,16 @@ TEST_F(GenericLayoutOptimizerTest, OptimizeSimpleConv2DGraph) {
   Status status;
   utils::GraphView graph_view(&output, &status);
   TF_ASSERT_OK(status);
-  // The expected optimized graph contains 2 extra sets of Transpose nodes and
-  // has the Conv2D's data_format set to "NCHW" on GPU, while "NHWC" on CPU.
-  auto* input_transpose_node = graph_view.GetNode(
-      absl::StrCat("Conv2D-0-Transpose", SRC_DATA_FORMAT, "To", DST_DATA_FORMAT,
-                   "-LayoutOptimizer"));
-
-  ASSERT_NE(input_transpose_node, nullptr);
-  ASSERT_EQ(input_transpose_node->NumRegularFanins(), 2);
-  VerifyRegularFaninMatch(input_transpose_node, 0, "Input", 0);
 
   auto* conv2d_node = graph_view.GetNode("Conv2D");
   ASSERT_NE(conv2d_node, nullptr);
   ASSERT_EQ(conv2d_node->NumRegularFanins(), 2);
-  VerifyRegularFaninMatch(conv2d_node, 0, input_transpose_node->GetName(), 0);
   VerifyRegularFaninMatch(conv2d_node, 1, "Filter", 0);
-  VerifyDataFormatAttributeMatch(conv2d_node, DST_DATA_FORMAT);
-
-  auto* output_transpose_node = graph_view.GetNode(
-      absl::StrCat("Conv2D-0-0-Transpose", DST_DATA_FORMAT, "To",
-                   SRC_DATA_FORMAT, "-LayoutOptimizer"));
-  ASSERT_NE(output_transpose_node, nullptr);
-  ASSERT_EQ(output_transpose_node->NumRegularFanins(), 2);
-  VerifyRegularFaninMatch(output_transpose_node, 0, conv2d_node->GetName(), 0);
+  VerifyDataFormatAttributeMatch(conv2d_node, SRC_DATA_FORMAT);
 
   auto* output_node = graph_view.GetNode("Output");
   ASSERT_NE(output_node, nullptr);
   ASSERT_EQ(output_node->NumRegularFanins(), 1);
-  VerifyRegularFaninMatch(output_node, 0, output_transpose_node->GetName(), 0);
 }
 
 TEST_F(GenericLayoutOptimizerTest, PreserveFetch) {
@@ -308,13 +295,14 @@ TEST_F(GenericLayoutOptimizerTest, EmptyDevice) {
   TF_ASSERT_OK(status);
   auto* conv_node = graph_view.GetNode("Conv2D");
   ASSERT_NE(conv_node, nullptr);
-  VerifyDataFormatAttributeMatch(conv_node, DST_DATA_FORMAT);
+  VerifyDataFormatAttributeMatch(conv_node, SRC_DATA_FORMAT);
 }
 
 TEST_F(GenericLayoutOptimizerTest, GPUDevice) {
 #if !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
   GTEST_SKIP() << "Neither CUDA nor ROCm is enabled";
 #endif  // !(GOOGLE_CUDA || TENSORFLOW_USE_ROCM)
+  tsl::enable_tensor_float_32_execution(false);  // NOLINT
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
   auto conv =
       SimpleConv2D(&s, 4, 2, "VALID", "/job:w/replica:0/task:0/device:GPU:0");
@@ -430,23 +418,12 @@ TEST_F(GenericLayoutOptimizerTest, Conv2DBackpropInputNonConstInputSizes) {
     auto* conv2d_backprop_node = graph_view.GetNode("Conv2DBackpropInput");
     ASSERT_NE(conv2d_backprop_node, nullptr);
     ASSERT_EQ(conv2d_backprop_node->NumRegularFanins(), 3);
-    VerifyRegularFaninMatch(
-        conv2d_backprop_node, 0,
-        absl::StrCat("Conv2DBackpropInput-0-DataFormatVecPermute",
-                     SRC_DATA_FORMAT, "To", DST_DATA_FORMAT,
-                     "-LayoutOptimizer"),
-        0);
-    auto* input_sizes_node = graph_view.GetNode(absl::StrCat(
-        "Conv2DBackpropInput-0-DataFormatVecPermute", SRC_DATA_FORMAT, "To",
-        DST_DATA_FORMAT, "-LayoutOptimizer"));
-    ASSERT_NE(input_sizes_node, nullptr);
-    EXPECT_EQ(input_sizes_node->GetOp(), "DataFormatVecPermute");
-    ASSERT_EQ(input_sizes_node->NumRegularFanins(), 1);
-    VerifyRegularFaninMatch(input_sizes_node, 0, "InputSizesIdentity", 0);
+    VerifyRegularFaninMatch(conv2d_backprop_node, 0, "InputSizesIdentity", 0);
   }
 }
 
 TEST_F(GenericLayoutOptimizerTest, Conv2DDataFormatVecPermuteCollapse) {
+  tsl::enable_tensor_float_32_execution(false);
   Scope scope =
       Scope::NewRootScope().WithDevice(absl::StrCat("/device:", DEVICE, ":0"));
   auto conv = SimpleConv2D(&scope, 4, 2, "VALID",

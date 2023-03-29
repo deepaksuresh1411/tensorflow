@@ -18,8 +18,8 @@ import copy
 from packaging import version as packaging_version  # pylint: disable=g-bad-import-order
 import os.path
 import re
+import sys
 
-import six
 from google.protobuf.any_pb2 import Any
 from google.protobuf import text_format
 
@@ -30,6 +30,7 @@ from tensorflow.core.protobuf import meta_graph_pb2
 from tensorflow.core.protobuf import saver_pb2
 from tensorflow.python.client import pywrap_tf_session as c_api
 from tensorflow.python.eager import context
+from tensorflow.python.framework import byte_swap_tensor as bst
 from tensorflow.python.framework import error_interpolation
 from tensorflow.python.framework import graph_io
 from tensorflow.python.framework import importer
@@ -78,7 +79,7 @@ def _node_def(from_node_def, export_scope, unbound_inputs, clear_devices=False):
       node_def.input[i] = ops.strip_name_scope(v, export_scope)
   node_def.name = compat.as_bytes(
       ops.strip_name_scope(from_node_def.name, export_scope))
-  for k, v in six.iteritems(from_node_def.attr):
+  for k, v in from_node_def.attr.items():
     if k == "_class":
       new_s = [compat.as_bytes(
           ops.strip_name_scope(s, export_scope)) for s in v.list.s
@@ -208,9 +209,9 @@ def _get_kind_name(item):
   Returns:
     The string representation of the kind in CollectionDef.
   """
-  if isinstance(item, (six.string_types, six.binary_type)):
+  if isinstance(item, (str, bytes)):
     kind = "bytes_list"
-  elif isinstance(item, six.integer_types):
+  elif isinstance(item, int):
     kind = "int64_list"
   elif isinstance(item, float):
     kind = "float_list"
@@ -353,7 +354,7 @@ def _should_include_node(node_or_node_name, export_scope, exclude_nodes):
   Returns:
     `True` if the node should be included.
   """
-  if not isinstance(node_or_node_name, six.string_types):
+  if not isinstance(node_or_node_name, str):
     try:
       node_name = node_or_node_name.name
     except AttributeError:
@@ -389,7 +390,7 @@ def add_collection_def(meta_graph_def, key, graph=None,
     raise TypeError(
         f"graph must be of type Graph. Received type: {type(graph)}.")
 
-  if not isinstance(key, six.string_types) and not isinstance(key, bytes):
+  if not isinstance(key, str) and not isinstance(key, bytes):
     logging.warning("Only collections with string type keys will be "
                     "serialized. This key has %s", type(key))
     return
@@ -637,6 +638,8 @@ def read_meta_graph_file(filename):
     file_content = f.read()
   try:
     meta_graph_def.ParseFromString(file_content)
+    if sys.byteorder == "big":
+      bst.swap_tensor_content_in_graph_function(meta_graph_def, "little", "big")
     return meta_graph_def
   except Exception:  # pylint: disable=broad-except
     pass
@@ -644,6 +647,8 @@ def read_meta_graph_file(filename):
   # Next try to read it as a text file.
   try:
     text_format.Merge(file_content.decode("utf-8"), meta_graph_def)
+    if sys.byteorder == "big":
+      bst.swap_tensor_content_in_graph_function(meta_graph_def, "little", "big")
   except text_format.ParseError as e:
     raise IOError(f"Cannot parse file {filename}: {str(e)}.")
 

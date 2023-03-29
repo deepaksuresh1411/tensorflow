@@ -18,7 +18,7 @@ import copy
 import os
 
 from absl.testing import parameterized
-
+from tensorflow.python.checkpoint import checkpoint as trackable_utils
 from tensorflow.python.distribute import collective_all_reduce_strategy
 from tensorflow.python.distribute import combinations
 from tensorflow.python.distribute import distribute_lib
@@ -40,14 +40,13 @@ from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import control_flow_assert
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables as variables_lib
 from tensorflow.python.saved_model import save
 from tensorflow.python.saved_model import save_context
 from tensorflow.python.saved_model import save_options
-from tensorflow.python.training.tracking import util as trackable_utils
 from tensorflow.python.types import core
 
 
@@ -339,7 +338,7 @@ class DistributedVariableTest(test.TestCase, parameterized.TestCase):
         self.assertIs(captures[0][0], v._primary.handle)
 
     def _assert(cond):
-      return control_flow_ops.Assert(cond, [cond])
+      return control_flow_assert.Assert(cond, [cond])
 
     with distribution.scope():
       # We use four variables for convenience reasons. They have no special

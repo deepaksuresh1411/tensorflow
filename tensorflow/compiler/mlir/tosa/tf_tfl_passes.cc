@@ -49,11 +49,15 @@ void createTFTFLtoTOSALegalizationPipeline(
   pm.addPass(mlir::TFL::CreateLiftTfliteFlexOpsPass());
   pm.addPass(mlir::tosa::createFuseBiasTFPass());
   pm.addPass(mlir::tosa::createConvertTFLUint8Pass());
+  if (opts.dequantize_tfl_softmax) {
+    pm.addPass(mlir::tosa::createDequantizeTFLSoftmaxPass());
+  }
   pm.addPass(mlir::tosa::createLegalizeTFTFLPass());
 
   //----------------------------------------------------------------------------
   // Post conversion cleanup.
   //----------------------------------------------------------------------------
+  pm.addPass(mlir::tosa::createLowerComplexTypesPass());
   pm.addPass(mlir::tosa::createTosaInferShapesPass());
   pm.addPass(mlir::tosa::createTosaMakeBroadcastablePass());
   // Inline the call/return basic blocks within TOSA control flow ops.

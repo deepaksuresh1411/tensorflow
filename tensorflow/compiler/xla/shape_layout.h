@@ -18,10 +18,11 @@ limitations under the License.
 
 #include <string>
 
+#include "tensorflow/compiler/xla/printer.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/tsl/platform/status.h"
 
 namespace xla {
 
@@ -85,9 +86,10 @@ class ShapeLayout {
   void ResetLayout(const Layout& layout, ShapeIndexView shape_index);
 
   // Returns a string representation of this object.
-  std::string ToString() const {
-    return ShapeUtil::HumanStringWithLayout(shape_);
-  }
+  void Print(Printer* printer) const { shape_.Print(printer, true); }
+
+  // Returns a string representation of this object.
+  std::string ToString() const { return shape_.ToString(true); }
 
   // Tests for equality of both shape and layout (ShapeUtil::Equal).
   bool operator==(const ShapeLayout& other) const;

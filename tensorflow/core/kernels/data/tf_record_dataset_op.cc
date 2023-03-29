@@ -68,7 +68,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
@@ -88,10 +88,10 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
   }
 
   Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
-    return Status::OK();
+    return OkStatus();
   }
 
-  Status CheckExternalState() const override { return Status::OK(); }
+  Status CheckExternalState() const override { return OkStatus(); }
 
  protected:
   Status AsGraphDefInternal(SerializationContext* ctx,
@@ -105,7 +105,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
     TF_RETURN_IF_ERROR(b->AddScalar(options_.buffer_size, &buffer_size));
     TF_RETURN_IF_ERROR(b->AddDataset(
         this, {filenames, compression_type, buffer_size}, output));
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -113,6 +113,8 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
    public:
     explicit Iterator(const Params& params)
         : DatasetIterator<Dataset>(params) {}
+
+    bool SymbolicCheckpointCompatible() const override { return true; }
 
     Status GetNextInternal(IteratorContext* ctx,
                            std::vector<Tensor>* out_tensors,
@@ -132,7 +134,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
             bytes_counter->IncrementBy(
                 out_tensors->back().scalar<tstring>()().size());
             *end_of_sequence = false;
-            return Status::OK();
+            return OkStatus();
           }
           out_tensors->pop_back();
           if (!errors::IsOutOfRange(s)) {
@@ -153,7 +155,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
         // Iteration ends when there are no more files to process.
         if (current_file_index_ == dataset()->filenames_.size()) {
           *end_of_sequence = true;
-          return Status::OK();
+          return OkStatus();
         }
 
         TF_RETURN_IF_ERROR(SetupStreamsLocked(ctx->env()));
@@ -174,7 +176,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
           *num_skipped += last_num_skipped;
           if (s.ok()) {
             *end_of_sequence = false;
-            return Status::OK();
+            return OkStatus();
           }
           if (!errors::IsOutOfRange(s)) {
             // In case of other errors e.g., DataLoss, we still move forward
@@ -194,7 +196,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
         // Iteration ends when there are no more files to process.
         if (current_file_index_ == dataset()->filenames_.size()) {
           *end_of_sequence = true;
-          return Status::OK();
+          return OkStatus();
         }
 
         TF_RETURN_IF_ERROR(SetupStreamsLocked(ctx->env()));
@@ -217,7 +219,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
         TF_RETURN_IF_ERROR(
             writer->WriteScalar(full_name(kOffset), reader_->TellOffset()));
       }
-      return Status::OK();
+      return OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
@@ -234,7 +236,7 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
         TF_RETURN_IF_ERROR(SetupStreamsLocked(ctx->env()));
         TF_RETURN_IF_ERROR(reader_->SeekOffset(offset));
       }
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
@@ -250,9 +252,9 @@ class TFRecordDatasetOp::Dataset : public DatasetBase {
       TF_RETURN_IF_ERROR(env->NewRandomAccessFile(
           TranslateFileName(dataset()->filenames_[current_file_index_]),
           &file_));
-      reader_ = absl::make_unique<io::SequentialRecordReader>(
+      reader_ = std::make_unique<io::SequentialRecordReader>(
           file_.get(), dataset()->options_);
-      return Status::OK();
+      return OkStatus();
     }
 
     // Resets all reader streams.

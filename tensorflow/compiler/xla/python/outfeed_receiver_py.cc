@@ -15,13 +15,17 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/python/outfeed_receiver_py.h"
 
+#include <cstdint>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "absl/algorithm/container.h"
-#include "absl/memory/memory.h"
 #include "absl/synchronization/mutex.h"
-#include "pybind11/functional.h"
-#include "pybind11/pybind11.h"
+#include "pybind11/cast.h"  // from @pybind11
+#include "pybind11/functional.h"  // from @pybind11
+#include "pybind11/pybind11.h"  // from @pybind11
+#include "tensorflow/compiler/xla/client/executable_build_options.h"
 #include "tensorflow/compiler/xla/client/xla_builder.h"
 #include "tensorflow/compiler/xla/pjrt/pjrt_client.h"
 #include "tensorflow/compiler/xla/python/outfeed_receiver.h"
@@ -42,9 +46,11 @@ class OutfeedReceiverForPython {
   using CallbackToPython =
       std::function<void(ClientAndPtr<PjRtDevice>, uint32_t, pybind11::object)>;
 
-  OutfeedReceiverForPython(CallbackToPython callback_python,
-                           std::vector<std::shared_ptr<PyClient>> clients,
-                           ssize_t max_callback_queue_size_bytes)
+  OutfeedReceiverForPython(
+      CallbackToPython callback_python,
+      std::vector<std::shared_ptr<PyClient>> clients,
+      ssize_t max_callback_queue_size_bytes,
+      const std::optional<ExecutableBuildOptions>& executable_build_options)
       : callback_python_(std::move(callback_python)),
         clients_(std::move(clients)) {
     OutfeedReceiver::Callback callback =
@@ -57,8 +63,9 @@ class OutfeedReceiverForPython {
                       [](const std::shared_ptr<PyClient>& client) {
                         return client->pjrt_client();
                       });
-    outfeed_receiver_ = absl::make_unique<OutfeedReceiver>(
-        callback, client_ptrs, max_callback_queue_size_bytes);
+    outfeed_receiver_ = std::make_unique<OutfeedReceiver>(
+        callback, client_ptrs, max_callback_queue_size_bytes,
+        executable_build_options);
   }
   OutfeedReceiverForPython(const OutfeedReceiverForPython&) = delete;
   OutfeedReceiverForPython& operator=(const OutfeedReceiverForPython&) = delete;
@@ -81,9 +88,10 @@ class OutfeedReceiverForPython {
   void Start() { outfeed_receiver_->Start(); }
 
   StatusOr<XlaOp> AddOutfeed(XlaBuilder* builder, XlaOp token,
-                             uint32_t consumer_id, std::vector<XlaOp> arrays) {
+                             uint32_t consumer_id, std::vector<XlaOp> arrays,
+                             uint32_t device_idx) {
     return outfeed_receiver_->AddOutfeedToBuilder(builder, token, consumer_id,
-                                                  arrays);
+                                                  arrays, device_idx);
   }
 
   void Callback(PjRtDevice* device, uint32_t consumer_id,
@@ -102,8 +110,7 @@ class OutfeedReceiverForPython {
         });
     CHECK(it != clients_.end());
     py::gil_scoped_acquire gil_acquire;  // Need GIL also for LiteralToPython
-    py::object literal_python =
-        LiteralToPython(std::move(literal)).ValueOrDie();
+    py::object literal_python = LiteralToPython(std::move(literal)).value();
     // The callback_ should handle all exceptions in user-code. If we get
     // an exception here, it is a bug in the callback and we should stop.
     callback_python_(WrapWithClient<PjRtDevice>(*it, device), consumer_id,
@@ -127,15 +134,18 @@ void BuildOutfeedReceiverSubmodule(py::module* m) {
       "start",
       [](OutfeedReceiverForPython::CallbackToPython callback_to_python,
          std::vector<std::shared_ptr<PyClient>> clients,
-         ssize_t max_callback_queue_size_bytes)
+         ssize_t max_callback_queue_size_bytes,
+         std::optional<ExecutableBuildOptions> executable_build_options)
           -> std::unique_ptr<OutfeedReceiverForPython> {
-        auto server = absl::make_unique<OutfeedReceiverForPython>(
-            callback_to_python, clients, max_callback_queue_size_bytes);
+        auto server = std::make_unique<OutfeedReceiverForPython>(
+            callback_to_python, clients, max_callback_queue_size_bytes,
+            executable_build_options);
         server->Start();
         return server;
       },
       py::arg("callback_to_python"), py::arg("backends"),
       py::arg("max_queue_size_bytes") = 256 * 1024 * 1024,
+      py::arg("executable_build_options") = std::nullopt,
       R"(Starts a multithreaded outfeed receiver.
 
       There is one thread for each of the specified devices. When Python
@@ -159,6 +169,7 @@ void BuildOutfeedReceiverSubmodule(py::module* m) {
   outfeed_receiver_class.def(
       "add_outfeed", &OutfeedReceiverForPython::AddOutfeed, py::arg("builder"),
       py::arg("token"), py::arg("consumer_id"), py::arg("arrays"),
+      py::arg("device_idx"),
       R"(Adds an outfeed into the given computation builder.
 
       Has the side-effect of registering the sent shape along with the consumer

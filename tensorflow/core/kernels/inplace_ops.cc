@@ -37,7 +37,7 @@ Status DoParallelConcatUpdate(const Device& d, const Tensor& value, int32_t loc,
   auto nrows = Toutput.dimension(0);
   auto r = (loc % nrows + nrows) % nrows;  // Guard index range.
   Toutput.template chip<0>(r).device(d) = Tvalue.template chip<0>(0);
-  return Status::OK();
+  return OkStatus();
 }
 
 template <>
@@ -78,7 +78,7 @@ class ParallelConcatUpdate : public OpKernel {
     OP_REQUIRES(
         ctx, value.dim_size(0) > loc_,
         errors::InvalidArgument("0th dimension of value = ", value.dim_size(0),
-                                " is less than loc_=", loc_));
+                                " must be greater than loc_ = ", loc_));
 
     auto update = ctx->input(1);
 
@@ -173,7 +173,7 @@ typedef Eigen::GpuDevice GPUDevice;
                               .Device(DEVICE_GPU)             \
                               .TypeConstraint<type>("dtype"), \
                           ParallelConcatStart<GPUDevice, type>);
-TF_CALL_GPU_NUMBER_TYPES(REGISTER_PARALLEL_CONCAT_START)
+TF_CALL_GPU_NUMBER_TYPES(REGISTER_PARALLEL_CONCAT_START);
 #undef REGISTER_PARALLEL_CONCAT_START
 
 #define REGISTER_PARALLEL_CONCAT(type)                                     \
@@ -188,7 +188,7 @@ TF_CALL_GPU_NUMBER_TYPES(REGISTER_PARALLEL_CONCAT);
                               .Device(DEVICE_GPU)         \
                               .TypeConstraint<type>("T"), \
                           ParallelConcatUpdate<GPUDevice>);
-TF_CALL_GPU_NUMBER_TYPES(REGISTER)
+TF_CALL_GPU_NUMBER_TYPES(REGISTER);
 #undef REGISTER
 
 // Register versions that operate on int32 data on the CPU even though the op
@@ -291,10 +291,10 @@ Status DoInplace(const CPUDevice& device, InplaceOpType op, const Tensor& i,
   if (op == I_UPDATE) {
     if (v.dtype() == DT_STRING) {
       DoInplaceStringUpdateOp(device, i, v, y);
-      return Status::OK();
+      return OkStatus();
     } else if (v.dtype() == DT_BOOL) {
       DoInplaceOp<bool>(device, op, i, v, y);
-      return Status::OK();
+      return OkStatus();
     }
   }
   switch (v.dtype()) {
@@ -308,7 +308,7 @@ Status DoInplace(const CPUDevice& device, InplaceOpType op, const Tensor& i,
       return errors::InvalidArgument("Unsupported data type: ",
                                      DataTypeString(v.dtype()));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // end namespace functor
@@ -378,7 +378,7 @@ Status DoCopy(const CPUDevice& device, const Tensor& x, Tensor* y) {
       return errors::InvalidArgument("Unsupported data type: ",
                                      DataTypeString(x.dtype()));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // end namespace functor
@@ -464,11 +464,13 @@ REGISTER_KERNEL_BUILDER(
 REGISTER(float);
 REGISTER(double);
 REGISTER(Eigen::half);
+REGISTER(Eigen::bfloat16);
 REGISTER(int64_t);
 
 REGISTER_EMPTY(float, GPU);
 REGISTER_EMPTY(double, GPU);
 REGISTER_EMPTY(Eigen::half, GPU);
+REGISTER_EMPTY(Eigen::bfloat16, GPU);
 REGISTER_EMPTY(int64_t, GPU);
 REGISTER_EMPTY(int32, GPU);
 

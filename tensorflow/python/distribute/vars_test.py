@@ -18,7 +18,8 @@ import itertools
 
 import uuid
 from absl.testing import parameterized
-
+from tensorflow.python.checkpoint import checkpoint as trackable_utils
+from tensorflow.python.checkpoint import checkpoint_management as ckpt_manager
 from tensorflow.python.distribute import collective_all_reduce_strategy
 from tensorflow.python.distribute import combinations
 from tensorflow.python.distribute import distribution_strategy_context as ds_context
@@ -35,40 +36,43 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables as variables_lib
 from tensorflow.python.tpu import tpu_strategy_util
-from tensorflow.python.training import checkpoint_management as ckpt_manager
-from tensorflow.python.training.tracking import util as trackable_utils
+from tensorflow.python.util import variable_utils
 
 
 def strategy_and_run_tf_function_combinations():
   # Test the combination of different strategies and whether a tf.function
   # is passed into strategy.run."""
+  # TODO(b/197981388): re-enable MWMS test
+  # return combinations.combine(
+  #     distribution=[
+  #         strategy_combinations.mirrored_strategy_with_gpu_and_cpu,
+  #     ],
+  #     mode=["graph", "eager"],
+  #     experimental_run_tf_function=[True, False],
+  #     use_var_policy=[True, False]) +
   return combinations.combine(
       distribution=[
-          strategy_combinations.mirrored_strategy_with_gpu_and_cpu,
+          strategy_combinations.tpu_strategy,
+          strategy_combinations.tpu_strategy_packed_var,
       ],
       mode=["graph", "eager"],
-      experimental_run_tf_function=[True, False],
-      use_var_policy=[True, False]) + combinations.combine(
-          distribution=[
-              strategy_combinations.tpu_strategy,
-              strategy_combinations.tpu_strategy_packed_var,
-          ],
-          mode=["graph", "eager"],
-          experimental_run_tf_function=[True],
-          use_var_policy=[True, False])
+      experimental_run_tf_function=[True],
+      use_var_policy=[True, False])
 
 
 def strategy_with_var_policy():
   return combinations.combine(
       distribution=[
           strategy_combinations.mirrored_strategy_with_gpu_and_cpu,
-          strategy_combinations.multi_worker_mirrored_2x1_cpu,
-          strategy_combinations.multi_worker_mirrored_2x1_gpu,
+          # TODO(b/197981388): re-enable MWMS test
+          # strategy_combinations.multi_worker_mirrored_2x1_cpu,
+          # strategy_combinations.multi_worker_mirrored_2x1_gpu,
           strategy_combinations.tpu_strategy,
           strategy_combinations.tpu_strategy_packed_var,
       ],
@@ -220,10 +224,6 @@ class OnWriteVariableSync(test.TestCase, parameterized.TestCase):
 
   @combinations.generate(strategy_with_var_policy())
   def testValueInReplicaContext(self, distribution):
-    if isinstance(distribution.extended,
-                  collective_all_reduce_strategy.CollectiveAllReduceExtended):
-      self.skipTest("b/162916064 direct value assignment fails for MWMS."
-                    "Re-enable the test after the it's fixed.")
     with distribution.scope():
       v = variables_lib.Variable(
           1., aggregation=variables_lib.VariableAggregation.MEAN)
@@ -242,7 +242,6 @@ class OnWriteVariableSync(test.TestCase, parameterized.TestCase):
   @combinations.generate(strategy_with_var_policy())
   def testValueInReplicaContextAssignDirectValue(self, distribution,
                                                  use_var_policy):
-    self.skipTest("Test to reproduce b/162916064.")
     with distribution.scope():
       v = variables_lib.Variable(
           1., aggregation=variables_lib.VariableAggregation.MEAN)
@@ -250,7 +249,7 @@ class OnWriteVariableSync(test.TestCase, parameterized.TestCase):
 
       @def_function.function
       def f():
-        with ops.control_dependencies([v.assign_add(1)]):
+        with ops.control_dependencies([v.assign_add(1.)]):
           return v.value()
 
       results = self.evaluate(
@@ -366,10 +365,6 @@ class OnWriteVariableSync(test.TestCase, parameterized.TestCase):
 
   @combinations.generate(strategy_with_var_policy())
   def testInitScope(self, distribution):
-    if isinstance(distribution.extended,
-                  collective_all_reduce_strategy.CollectiveAllReduceExtended):
-      self.skipTest("b/162916064 direct value assignment fails for MWMS."
-                    "Re-enable the test after the it's fixed.")
     if not context.executing_eagerly(): self.skipTest("eager only")
 
     class C(object):
@@ -496,11 +491,11 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
       ctx = ds_context.get_replica_context()
       replica_id = ctx.replica_id_in_sync_group
       value = indexed_slices.IndexedSlices(
-          values=array_ops.stack([
+          values=array_ops_stack.stack([
               math_ops.cast(replica_id, dtypes.float32),
               math_ops.cast(replica_id + 1, dtypes.float32)
           ]),
-          indices=array_ops.stack([replica_id, replica_id + 1]),
+          indices=array_ops_stack.stack([replica_id, replica_id + 1]),
           dense_shape=(3,))
       return v.scatter_sub(value)
 
@@ -521,8 +516,8 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
       ctx = ds_context.get_replica_context()
       replica_id = ctx.replica_id_in_sync_group
       value = indexed_slices.IndexedSlices(
-          values=array_ops.stack([replica_id, replica_id + 1]),
-          indices=array_ops.stack([replica_id, replica_id + 1]),
+          values=array_ops_stack.stack([replica_id, replica_id + 1]),
+          indices=array_ops_stack.stack([replica_id, replica_id + 1]),
           dense_shape=(3,))
       return v.scatter_add(value)
 
@@ -668,8 +663,9 @@ class OnWriteVariableSyncScatterTests(test.TestCase, parameterized.TestCase):
         return scatter_op(delta)
 
       per_replica_results = self.evaluate(
-          distribution.experimental_local_results(
-              distribution.run(scatter_xxx)))
+          variable_utils.convert_variables_to_tensors(
+              distribution.experimental_local_results(
+                  distribution.run(scatter_xxx))))
       self.assertAllClose([expect, expect], per_replica_results)
 
     with distribution.scope():
@@ -1005,11 +1001,8 @@ class OnReadVariableSyncTest(test.TestCase, parameterized.TestCase):
       self.assertEqual(expected, self.evaluate(array_ops.identity(v)),
                        aggregation)
 
-  # TODO(b/145574622): Re-enable this test once ReduceOp argument is
-  # respected on GPUs.
   @combinations.generate(strategy_and_run_tf_function_combinations())
-  def disable_testAllReduce(self, distribution,
-                            experimental_run_tf_function):
+  def testAllReduce(self, distribution, experimental_run_tf_function):
     with distribution.scope():
       v = variable_scope.variable(
           2.,
@@ -1032,7 +1025,7 @@ class OnReadVariableSyncTest(test.TestCase, parameterized.TestCase):
     for i in range(distribution.num_replicas_in_sync):
       expected_result.append(2.0 * distribution.num_replicas_in_sync +
                              1.0 * i)
-    self.assertEqual(per_replica_results, tuple(expected_result))
+    self.assertAllEqual(per_replica_results, tuple(expected_result))
 
   @combinations.generate(strategy_and_run_tf_function_combinations())
   def testAssignPerReplicaBeforeRead(self, distribution,

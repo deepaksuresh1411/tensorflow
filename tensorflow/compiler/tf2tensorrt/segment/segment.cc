@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2tensorrt/segment/segment.h"
 
 #include <algorithm>
+#include <fstream>
 #include <map>
 #include <numeric>
 #include <queue>
@@ -36,6 +37,7 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/util/env_var.h"
 
 #if GOOGLE_CUDA && GOOGLE_TENSORRT
@@ -403,7 +405,7 @@ string TensorPropertiesToString(
 // TODO(bixia): investigate the use of symbolic shape analysis to improve
 //   segmentation, such as by requiring the dynamic dimensions to have the same
 //   negative value.
-absl::optional<const TensorShapeProto*> FindLeadingShape(
+std::optional<const TensorShapeProto*> FindLeadingShape(
     absl::Span<const OpInfo::TensorProperties> properties) {
   DCHECK(!properties.empty());
   const TensorShapeProto* result;
@@ -452,7 +454,7 @@ absl::optional<const TensorShapeProto*> FindLeadingShape(
     if (max_batch_dim_value <= 1) {
       return result;
     } else {
-      return absl::nullopt;
+      return std::nullopt;
     }
   }
 
@@ -532,7 +534,7 @@ bool OperationCanBeTranslatedToImplicitBatch(
     return false;
   }
 
-  absl::optional<const TensorShapeProto*> leading_shape =
+  std::optional<const TensorShapeProto*> leading_shape =
       FindLeadingShape(input_properties);
   return leading_shape.has_value() && leading_shape.value()->dim_size() >= 2;
 }
@@ -659,7 +661,7 @@ ClusterBatchSize GetClusterBatchSizeForNode(
 
   const std::vector<OpInfo::TensorProperties>& input_properties =
       graph_properties->GetInputProperties(node->name());
-  absl::optional<const TensorShapeProto*> optional_leading_shape =
+  std::optional<const TensorShapeProto*> optional_leading_shape =
       FindLeadingShape(GetInputsToDeterminateBatchSize(node, input_properties));
   DCHECK(optional_leading_shape.has_value());
   const TensorShapeProto* leading_shape = optional_leading_shape.value();
@@ -673,6 +675,8 @@ void AddSegmentForNode(const grappler::GraphProperties* graph_properties,
                        SimpleNode* node,
                        const DeviceNameUtils::ParsedName& device_name,
                        bool use_implicit_batch) {
+  tensorflow::profiler::TraceMe activity(
+      "AddSegmentForNode", tensorflow::profiler::TraceMeLevel::kInfo);
   ClusterProperty property(
       GetClusterBatchSizeForNode(graph_properties,
                                  node == nullptr ? nullptr : node->tf_node(),
@@ -683,13 +687,91 @@ void AddSegmentForNode(const grappler::GraphProperties* graph_properties,
 
 }  // namespace
 
+Status ExportNonConversionReportToCSV(
+    string filename,
+    std::map<string, std::map<string, int>>& nonconverted_ops_map,
+    string sep = "|") {
+  tensorflow::profiler::TraceMe activity(
+      "ExportNonConversionReportToCSV",
+      tensorflow::profiler::TraceMeLevel::kInfo);
+  std::unique_ptr<WritableFile> csv_file;
+  auto open_status = Env::Default()->NewWritableFile(filename, &csv_file);
+
+  if (!open_status.ok()) {
+    return errors::Internal("Failed to open output file: `", filename, "`");
+  }
+
+  LOG(WARNING) << "TF-TRT Non-Conversion Report saved at: `" << filename << "`";
+
+  std::ostringstream sstream;
+  sstream << "OP Name" << sep << "Reason" << sep << "Count" << std::endl;
+
+  for (auto& op_details : nonconverted_ops_map) {
+    auto op_name = op_details.first;
+    auto op_data = op_details.second;
+
+    for (auto& reject_data : op_data) {
+      auto reason = reject_data.first;
+      auto count = reject_data.second;
+      sstream << op_name << sep << reason << sep << count << std::endl;
+    }
+  }
+
+  auto append_status = csv_file->Append(sstream.str());
+
+  if (!append_status.ok()) {
+    return errors::Internal("Error writing to output file `", filename, "`.");
+  }
+
+  auto close_status = csv_file->Close();
+
+  if (!close_status.ok()) {
+    return errors::Internal("Error closing the file `", filename,
+                            "`. The file might be corrupted.");
+  }
+
+  return OkStatus();
+}
+
 string GenerateNonConversionReport(
     std::map<string, std::map<string, int>>& nonconverted_ops_map) {
   // Fetch whether to print a detailed version of the TF-TRT conversion report.
-  bool show_detailed_conversion_report;
-  TF_CHECK_OK(ReadBoolFromEnvVar("TF_TRT_SHOW_DETAILED_REPORT",
-                                 /*default_value=*/false,
-                                 &show_detailed_conversion_report));
+  // TF_TRT_SHOW_DETAILED_REPORT triggers three possible behaviors:
+  // - If Number >= 1:      Print detailed non-conversion report on stdout.
+  //                        Usage: TF_TRT_SHOW_DETAILED_REPORT=1
+  // - If non empty string: Exports the non-conversion report in CSV format at
+  //                        the path defined by the environment variable.
+  //                        This will also print the detailed non-conversion
+  //                        report on stdout.
+  //                        Usage: TF_TRT_SHOW_DETAILED_REPORT=/path/to/file.csv
+  // - Else:                Print normal (undetailed) non-conversion report on
+  //                        stdout.
+  tensorflow::profiler::TraceMe activity(
+      "GenerateNonConversionReport", tensorflow::profiler::TraceMeLevel::kInfo);
+
+  string detailed_report_var;
+  TF_CHECK_OK(ReadStringFromEnvVar("TF_TRT_SHOW_DETAILED_REPORT",
+                                   /*default_value=*/"", &detailed_report_var));
+
+  bool show_detailed_conversion_report = false;
+
+  if (detailed_report_var != "") {
+    // Checking if `TF_TRT_SHOW_DETAILED_REPORT` env var is a string or a number
+    if (detailed_report_var.find_first_not_of("-0123456789") != string::npos) {
+      const Status status = ExportNonConversionReportToCSV(
+          detailed_report_var, nonconverted_ops_map);
+
+      if (!status.ok()) {
+        // Log the error in case of issue, however do not stop execution.
+        LOG(ERROR) << "Problem encountered while generating the TF-TRT "
+                   << "Non-Conversion Report in CSV Format:\n"
+                   << status.error_message();
+      }
+      show_detailed_conversion_report = true;
+    } else if (std::stoi(detailed_report_var) >= 1) {
+      show_detailed_conversion_report = true;
+    }
+  }
 
   string unsupported_op_report =
       StrCat("\n\n", string(80, '#'), "\n",
@@ -777,6 +859,8 @@ Status SegmentGraph(const Graph* tf_graph,
                     const std::function<bool(const Edge*)>& input_candidate_fn,
                     const std::function<bool(const Edge*)>& output_candidate_fn,
                     const SegmentOptions& options, SegmentVector* segments) {
+  tensorflow::profiler::TraceMe activity(
+      "SegmentGraph", tensorflow::profiler::TraceMeLevel::kInfo);
   if (!options.use_implicit_batch && !options.allow_dynamic_non_batch_dim) {
     return errors::Internal(
         "Explicit batch mode should allow dynamic non-batch dimensions");
@@ -842,7 +926,7 @@ Status SegmentGraph(const Graph* tf_graph,
       nonconverted_ops_map[node_op_type][string(reason)]++;
       node = nullptr;
     };
-    absl::optional<DeviceNameUtils::ParsedName> device_name =
+    std::optional<DeviceNameUtils::ParsedName> device_name =
         GetDeviceParsedName(node->tf_node());
     // GetDeviceParseName capitalizes the device type.
     if (!device_name.has_value() ||
@@ -951,7 +1035,7 @@ Status SegmentGraph(const Graph* tf_graph,
 
         const DeviceNameUtils::ParsedName& out_device_name =
             out_cluster->Property().DeviceName();
-        absl::optional<DeviceNameUtils::ParsedName> merged_device_name =
+        std::optional<DeviceNameUtils::ParsedName> merged_device_name =
             MergeIfCompatible(expected_device_name, out_device_name);
         if (!merged_device_name.has_value()) {
           VLOG(3) << "... ... incompatible device names "
@@ -1219,7 +1303,7 @@ Status SegmentGraph(const Graph* tf_graph,
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace segment

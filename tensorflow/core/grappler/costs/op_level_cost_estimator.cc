@@ -551,7 +551,7 @@ OpLevelCostEstimator::OpLevelCostEstimator() {
 
   // Unary ops alphabetically sorted
   elementwise_ops_.emplace("Acos", EIGEN_COST(scalar_acos_op<float>));
-  elementwise_ops_.emplace("All", EIGEN_COST(scalar_boolean_and_op));
+  elementwise_ops_.emplace("All", EIGEN_COST(scalar_boolean_and_op<bool>));
   elementwise_ops_.emplace("ArgMax", EIGEN_COST(scalar_max_op<float>));
   elementwise_ops_.emplace("Asin", EIGEN_COST(scalar_asin_op<float>));
   elementwise_ops_.emplace("Atan", EIGEN_COST(scalar_atan_op<float>));
@@ -618,9 +618,10 @@ OpLevelCostEstimator::OpLevelCostEstimator() {
   elementwise_ops_.emplace("GreaterEqual", 1);
   elementwise_ops_.emplace("Less", 1);
   elementwise_ops_.emplace("LessEqual", 1);
-  elementwise_ops_.emplace("LogicalAnd", EIGEN_COST(scalar_boolean_and_op));
+  elementwise_ops_.emplace("LogicalAnd",
+                           EIGEN_COST(scalar_boolean_and_op<bool>));
   elementwise_ops_.emplace("LogicalNot", 1);
-  elementwise_ops_.emplace("LogicalOr", EIGEN_COST(scalar_boolean_or_op));
+  elementwise_ops_.emplace("LogicalOr", EIGEN_COST(scalar_boolean_or_op<bool>));
   elementwise_ops_.emplace("Maximum", EIGEN_COST(scalar_max_op<float>));
   elementwise_ops_.emplace("Minimum", EIGEN_COST(scalar_min_op<float>));
   elementwise_ops_.emplace("Mod", EIGEN_COST(scalar_mod_op<float>));
@@ -631,8 +632,8 @@ OpLevelCostEstimator::OpLevelCostEstimator() {
                            EIGEN_COST(scalar_product_op<float>));
   elementwise_ops_.emplace("RealDiv", EIGEN_COST(scalar_quotient_op<float>));
   elementwise_ops_.emplace("ReluGrad", EIGEN_COST(scalar_max_op<float>));
-  elementwise_ops_.emplace("Select", EIGEN_COST(scalar_boolean_or_op));
-  elementwise_ops_.emplace("SelectV2", EIGEN_COST(scalar_boolean_or_op));
+  elementwise_ops_.emplace("Select", EIGEN_COST(scalar_boolean_or_op<bool>));
+  elementwise_ops_.emplace("SelectV2", EIGEN_COST(scalar_boolean_or_op<bool>));
   elementwise_ops_.emplace("SquaredDifference",
                            EIGEN_COST(scalar_square_op<float>) +
                                EIGEN_COST(scalar_difference_op<float>));
@@ -1650,7 +1651,13 @@ std::vector<int64_t> OpLevelCostEstimator::CalculateOutputTensorSize(
     auto output_shape = MaybeGetMinimumShape(original_output_shape, num_dims,
                                              found_unknown_shapes);
     for (const auto& dim : output_shape.dim()) {
-      output_size *= dim.size();
+      int64_t new_output_size =
+          MultiplyWithoutOverflow(output_size, dim.size());
+      if (new_output_size < 0) {
+        VLOG(1) << "Overflow encountered when estimating cost, multiplying "
+                << output_size << " with " << dim.size();
+      }
+      output_size = new_output_size;
     }
     output_tensor_size.push_back(output_size);
   }
@@ -1671,7 +1678,7 @@ Status OpLevelCostEstimator::PredictDefaultNodeCosts(
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 bool HasZeroDim(const OpInfo& op_info) {
@@ -1896,7 +1903,7 @@ Status OpLevelCostEstimator::PredictSparseTensorDenseMatMul(
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictNoOp(const OpContext& op_context,
@@ -1904,7 +1911,7 @@ Status OpLevelCostEstimator::PredictNoOp(const OpContext& op_context,
   const auto& op_info = op_context.op_info;
   VLOG(1) << "Op:" << op_info.op() << " Execution Time 0 (ns)";
   // By default, NodeCosts is initialized to zero ops and bytes.
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictPureMemoryOp(const OpContext& op_context,
@@ -1933,7 +1940,7 @@ Status OpLevelCostEstimator::PredictIdentity(const OpContext& op_context,
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictVariable(const OpContext& op_context,
@@ -1952,7 +1959,7 @@ Status OpLevelCostEstimator::PredictVariable(const OpContext& op_context,
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictBatchMatMul(const OpContext& op_context,
@@ -1978,7 +1985,7 @@ Status OpLevelCostEstimator::PredictMetadata(const OpContext& op_context,
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictGatherOrSlice(const OpContext& op_context,
@@ -2031,7 +2038,7 @@ Status OpLevelCostEstimator::PredictGatherOrSlice(const OpContext& op_context,
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictScatter(const OpContext& op_context,
@@ -2079,7 +2086,7 @@ Status OpLevelCostEstimator::PredictScatter(const OpContext& op_context,
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictFusedOp(
@@ -2110,7 +2117,7 @@ Status OpLevelCostEstimator::PredictFusedOp(
         fused_node_costs.num_nodes_with_pure_memory_op;
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 /* static */
@@ -2239,7 +2246,7 @@ Status OpLevelCostEstimator::PredictMaxPool(const OpContext& op_context,
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictMaxPoolGrad(const OpContext& op_context,
@@ -2291,7 +2298,7 @@ Status OpLevelCostEstimator::PredictMaxPoolGrad(const OpContext& op_context,
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 /* This predict function handles three types of tensorflow ops
@@ -2323,7 +2330,7 @@ Status OpLevelCostEstimator::PredictAssignVariableOps(
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictAvgPool(const OpContext& op_context,
@@ -2360,7 +2367,7 @@ Status OpLevelCostEstimator::PredictAvgPool(const OpContext& op_context,
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictAvgPoolGrad(const OpContext& op_context,
@@ -2457,7 +2464,7 @@ Status OpLevelCostEstimator::PredictFusedBatchNorm(
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictFusedBatchNormGrad(
@@ -2495,7 +2502,7 @@ Status OpLevelCostEstimator::PredictFusedBatchNormGrad(
     node_costs->inaccurate = true;
     node_costs->num_nodes_with_unknown_shapes = 1;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpLevelCostEstimator::PredictNaryOp(const OpContext& op_context,
@@ -2528,30 +2535,37 @@ Status OpLevelCostEstimator::PredictNaryOp(const OpContext& op_context,
 }
 
 // softmax[i, j] = exp(logits[i, j]) / sum_j(exp(logits[i, j]))
-Status OpLevelCostEstimator::PredictSoftmax(const OpContext& op_context,
-                                            NodeCosts* node_costs) const {
+int64_t OpLevelCostEstimator::GetSoftmaxComputeOps(
+    const OpContext& op_context) const {
   bool found_unknown_shapes = false;
   const int64_t logits_size = CalculateTensorElementCount(
       op_context.op_info.inputs(0), &found_unknown_shapes);
-  // Softmax input rank should be >=1.
   TensorShapeProto logits_shape = op_context.op_info.inputs(0).shape();
-  if (logits_shape.unknown_rank() || logits_shape.dim_size() == 0) {
-    return errors::InvalidArgument("Softmax op has invalid input: ",
-                                   op_context.op_info.ShortDebugString());
-  }
-
 #define EIGEN_COST(X) Eigen::internal::functor_traits<Eigen::internal::X>::Cost
 
   // Every element of <logits> will be exponentiated, have that result included
   // in a sum across j, and also have that result multiplied by the reciprocal
   // of the sum_j. In addition, we'll compute 1/sum_j for every i.
-  auto ops =
+  int64_t ops =
       (EIGEN_COST(scalar_exp_op<float>) + EIGEN_COST(scalar_sum_op<float>) +
        EIGEN_COST(scalar_product_op<float>)) *
           logits_size +
       EIGEN_COST(scalar_inverse_op<float>) * logits_shape.dim(0).size();
 
 #undef EIGEN_COST
+  return ops;
+}
+
+Status OpLevelCostEstimator::PredictSoftmax(const OpContext& op_context,
+                                            NodeCosts* node_costs) const {
+  bool found_unknown_shapes = false;
+  // Softmax input rank should be >=1.
+  TensorShapeProto logits_shape = op_context.op_info.inputs(0).shape();
+  if (logits_shape.unknown_rank() || logits_shape.dim_size() == 0) {
+    return errors::InvalidArgument("Softmax op has invalid input: ",
+                                   op_context.op_info.ShortDebugString());
+  }
+  int64_t ops = GetSoftmaxComputeOps(op_context);
   return PredictDefaultNodeCosts(ops, op_context, &found_unknown_shapes,
                                  node_costs);
 }

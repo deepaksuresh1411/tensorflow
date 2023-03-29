@@ -15,6 +15,7 @@ limitations under the License.
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 
 #include "absl/strings/str_cat.h"
 #include "llvm/ADT/StringRef.h"
@@ -121,6 +122,12 @@ class MlirTensor : public TracingTensorHandle {
     return ptr->getKind() == kMlir;
   }
 
+  // Return default (TFT_UNSET) full type information. This could be updated in
+  // the future if full type information is needed.
+  tensorflow::FullTypeDef FullType() const override {
+    return tensorflow::FullTypeDef();
+  }
+
  private:
   Value value_;
 };
@@ -218,7 +225,7 @@ class MlirAbstractOp : public TracingOperation {
 class MlirFunction : public AbstractFunction {
  public:
   explicit MlirFunction(std::unique_ptr<MLIRContext> context,
-                        OwningOpRef<mlir::ModuleOp> module, FuncOp func)
+                        OwningOpRef<mlir::ModuleOp> module, func::FuncOp func)
       : AbstractFunction(kMlir),
         context_(std::move(context)),
         module_(std::move(module)),
@@ -234,7 +241,7 @@ class MlirFunction : public AbstractFunction {
  private:
   std::unique_ptr<MLIRContext> context_;
   OwningOpRef<mlir::ModuleOp> module_;
-  FuncOp func_;
+  func::FuncOp func_;
   std::unique_ptr<tensorflow::FunctionDef> fdef_;
 };
 
@@ -247,8 +254,9 @@ class MlirFunctionContext : public TracingContext {
     RegisterDialects(*context_);
     // TODO(aminim) figure out the location story here
     module_ = ModuleOp::create(builder_.getUnknownLoc());
-    func_ = FuncOp::create(builder_.getUnknownLoc(), name,
-                           builder_.getFunctionType(llvm::None, llvm::None));
+    func_ = func::FuncOp::create(
+        builder_.getUnknownLoc(), name,
+        builder_.getFunctionType(std::nullopt, std::nullopt));
     module_->push_back(func_);
     builder_ = OpBuilder::atBlockBegin(func_.addEntryBlock());
   }
@@ -279,7 +287,7 @@ class MlirFunctionContext : public TracingContext {
  private:
   std::unique_ptr<MLIRContext> context_;
   OpBuilder builder_;
-  FuncOp func_;
+  func::FuncOp func_;
   OwningOpRef<mlir::ModuleOp> module_;
 };
 
@@ -296,7 +304,7 @@ Status MlirAbstractOp::Reset(const char* op, const char* device_name) {
   name += op;
   // TODO(aminim) figure out the location story here
   state_ = std::make_unique<OperationState>(UnknownLoc::get(context_), name);
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirAbstractOp::SetAttrType(const char* attr_name,
@@ -308,7 +316,7 @@ Status MlirAbstractOp::SetAttrType(const char* attr_name,
   Builder builder(context_);
   TF_RETURN_IF_ERROR(ConvertDataType(dtype, builder, &mlir_type));
   attrs_[attr_name] = TypeAttr::get(mlir_type);
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirAbstractOp::SetOpName(const char* const op_name) {
@@ -317,7 +325,7 @@ Status MlirAbstractOp::SetOpName(const char* const op_name) {
     return FailedPrecondition("SetOpName called on already built op.");
   }
   op_name_ = op_name;
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirAbstractOp::AddRef(Type type, Type* output_type) {
@@ -330,7 +338,7 @@ Status MlirAbstractOp::AddRef(Type type, Type* output_type) {
     *output_type = RankedTensorType::get(tensor_type.getShape(), elt_type);
   }
   *output_type = UnrankedTensorType::get(elt_type);
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirAbstractOp::Create(ArrayRef<Value> operands,
@@ -368,7 +376,7 @@ Status MlirAbstractOp::Create(ArrayRef<Value> operands,
           return InvalidArgument("Missing attribute '", output_arg.type_attr(),
                                  "' required for output '", output_arg.name(),
                                  "'");
-        TypeAttr type_attr = attr.dyn_cast<TypeAttr>();
+        TypedAttr type_attr = attr.dyn_cast<TypedAttr>();
         if (!type_attr)
           return InvalidArgument("Attribute '", output_arg.type_attr(),
                                  "' required for output '", output_arg.name(),
@@ -440,7 +448,7 @@ Status MlirAbstractOp::Create(ArrayRef<Value> operands,
   }
   for (auto& it : attrs_) state_->addAttribute(it.first(), it.second);
   *state = state_.get();
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 const string& MlirAbstractOp::Name() const { return tf_op_type_; }
@@ -449,7 +457,7 @@ const string& MlirAbstractOp::DeviceName() const { return device_name_; }
 
 Status MlirAbstractOp::SetDeviceName(const char* name) {
   device_name_ = name;
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirAbstractOp::SetAttrString(const char* attr_name, const char* data,
@@ -464,7 +472,7 @@ Status MlirAbstractOp::SetAttrFloat(const char* attr_name, float value) {
 }
 Status MlirAbstractOp::SetAttrBool(const char* attr_name, bool value) {
   attrs_[attr_name] = BoolAttr::get(context_, value);
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 Status MlirAbstractOp::SetAttrShape(const char* attr_name, const int64_t* dims,
                                     const int num_dims) {
@@ -519,11 +527,12 @@ Status MlirAbstractOp::SetAttrFunctionList(
 Status MlirFunction::GetFunctionDef(tensorflow::FunctionDef** f) {
   if (fdef_) {
     *f = fdef_.get();
-    return Status::OK();
+    return ::tensorflow::OkStatus();
   }
   PassManager pm(func_.getContext());
   ::tensorflow::applyTensorflowAndCLOptions(pm);
-  pm.addNestedPass<FuncOp>(CreateFunctionalToExecutorDialectConversionPass());
+  pm.addNestedPass<func::FuncOp>(
+      CreateFunctionalToExecutorDialectConversionPass());
   pm.addPass(CreateBreakUpIslandsPass());
 
   // In case of failure, the `diag_handler` converts MLIR errors emitted to
@@ -538,7 +547,7 @@ Status MlirFunction::GetFunctionDef(tensorflow::FunctionDef** f) {
   TF_RETURN_IF_ERROR(
       ConvertMlirFunctionToFunctionLibraryDef(func_, configs, fdef_.get()));
   *f = fdef_.get();
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirAbstractOp::Execute(absl::Span<AbstractTensorHandle*> retvals,
@@ -549,12 +558,12 @@ Status MlirAbstractOp::Execute(absl::Span<AbstractTensorHandle*> retvals,
   *num_retvals = op->getNumResults();
   for (int i = 0; i < *num_retvals; i++)
     retvals[i] = new MlirTensor(op->getResult(i));
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Operation* MlirFunctionContext::CreateOperationFromState(
     const OperationState& state) {
-  return builder_.createOperation(state);
+  return builder_.create(state);
 }
 
 Status MlirFunctionContext::AddParameter(
@@ -566,7 +575,7 @@ Status MlirFunctionContext::AddParameter(
   TF_RETURN_IF_ERROR(ConvertDataTypeToTensor(dtype, builder_, &type));
   *handle =
       new MlirTensor(func_.getBody().front().addArgument(type, func_.getLoc()));
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirAbstractOp::AddInput(AbstractTensorHandle* input) {
@@ -600,7 +609,7 @@ Status MlirAbstractOp::AddInput(AbstractTensorHandle* input) {
   if (!arg_def.type_attr().empty())
     attrs_[arg_def.type_attr()] = TypeAttr::get(expected_type);
 
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirAbstractOp::AddInputList(
@@ -651,7 +660,7 @@ Status MlirAbstractOp::AddInputList(
       types.push_back(TypeAttr::get(cast<MlirTensor>(input)->getElementType()));
     attrs_[arg_def.type_list_attr()] = ArrayAttr::get(GetContext(), types);
   }
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status MlirFunctionContext::Finalize(OutputList* outputs,
@@ -673,7 +682,7 @@ Status MlirFunctionContext::Finalize(OutputList* outputs,
   auto result_types = body.getTerminator()->getOperandTypes();
   func_.setType(FunctionType::get(func_.getContext(), arg_types, result_types));
   *f = new MlirFunction(std::move(context_), std::move(module_), func_);
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 extern "C" {

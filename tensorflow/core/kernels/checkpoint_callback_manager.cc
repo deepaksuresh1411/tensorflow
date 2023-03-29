@@ -24,11 +24,9 @@ limitations under the License.
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/path.h"
-#include "tensorflow/core/platform/regexp.h"
-#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/stringpiece.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/tsl/platform/regexp.h"
 
 namespace tensorflow {
 namespace checkpoint {
@@ -60,6 +58,11 @@ void TriggerSaveCallbackIfFileNotExist(absl::string_view checkpoint_id,
   StatusOr<std::string> save_content = callback(checkpoint_id);
   if (!save_content.ok()) {
     LOG(WARNING) << save_content.status();
+    return;
+  }
+
+  // An empty string means nothing to be saved.
+  if (save_content->empty()) {
     return;
   }
 
@@ -162,7 +165,7 @@ Status CheckpointCallbackManager::RegisterSaveCallback(
     TriggerSaveCallbackIfFileNotExist(checkpoint_id, checkpoint_dir,
                                       file_extension, lazy_callback);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 bool CheckpointCallbackManager::DoesSaveCallbackExist(
@@ -196,7 +199,7 @@ Status CheckpointCallbackManager::RegisterRestoreCallback(
     TriggerRestoreCallbackIfFileExists(checkpoint_id, checkpoint_dir,
                                        file_extension, lazy_callback);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 bool CheckpointCallbackManager::DoesRestoreCallbackExist(
@@ -238,6 +241,10 @@ void CheckpointCallbackManager::Restore(absl::string_view prefix) {
   absl::flat_hash_map<std::string, RestoreCallback> copy_of_restore_callbacks;
   {
     mutex_lock l(mu_);
+    if (*id_and_dir == last_restored_checkpoint_id_and_dir_) {
+      // We don't want to trigger restore callback function multiple times.
+      return;
+    }
     last_restored_checkpoint_id_and_dir_ = *id_and_dir;
     copy_of_restore_callbacks = restore_callbacks_;
   }

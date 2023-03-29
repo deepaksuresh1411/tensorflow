@@ -67,7 +67,7 @@ REGISTER_OP("_MklNativeConv3DBackpropInputV2")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &s));
       TF_RETURN_IF_ERROR(c->WithRank(s, 5, &s));
       c->set_output(0, s);
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(R"doc(
 MKL version of Convolution3D backward input op that does not depend on layout
@@ -93,7 +93,7 @@ REGISTER_OP("_MklNativeConv3DBackpropFilterV2")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(1, &s));
       TF_RETURN_IF_ERROR(c->WithRank(s, 5, &s));
       c->set_output(0, s);
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(R"doc(
 MKL version of Conv3DBackpropFilter op that does not depend on layout
@@ -116,6 +116,7 @@ REGISTER_OP("_MklNativeFusedConv3D")
     .Attr(GetPaddingAttrString())
     .Attr(GetConvnet3dDataFormatAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .Attr("fused_ops: list(string) = []")
     .Attr("epsilon: float = 0.0001")
     .Attr("leakyrelu_alpha: float = 0.2")
@@ -138,6 +139,7 @@ REGISTER_OP("_FusedConv3D")
     .Attr(GetPaddingAttrString())
     .Attr(GetConvnet3dDataFormatAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .Attr("fused_ops: list(string) = []")
     .Attr("epsilon: float = 0.0001")
     .Attr("leakyrelu_alpha: float = 0.2")
@@ -176,7 +178,7 @@ REGISTER_OP("_MklNativeDepthwiseConv2dNativeBackpropInput")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &s));
       TF_RETURN_IF_ERROR(c->WithRank(s, 4, &s));
       c->set_output(0, s);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklNativeDepthwiseConv2dNativeBackpropFilter")
@@ -195,7 +197,7 @@ REGISTER_OP("_MklNativeDepthwiseConv2dNativeBackpropFilter")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(1, &s));
       TF_RETURN_IF_ERROR(c->WithRank(s, 4, &s));
       c->set_output(0, s);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklFusedConv2D")
@@ -678,6 +680,20 @@ on the quantized input.
 expected to invoke these operators.
 )doc");
 
+REGISTER_OP("_QuantizedMaxPool3D")
+    .Input("input: T")
+    .Input("min_input: float")
+    .Input("max_input: float")
+    .Output("output: T")
+    .Output("min_output: float")
+    .Output("max_output: float")
+    .Attr("ksize: list(int) >= 5")
+    .Attr("strides: list(int) >= 5")
+    .Attr(GetPaddingAttrString())
+    .Attr(GetConvnet3dDataFormatAttrString())
+    .Attr("T: quantizedtype")
+    .SetShapeFn(shape_inference::Pool3DShape);
+
 REGISTER_OP("_MklQuantizedAvgPool")
     .Input("input:           T")
     .Input("min_input:       float")
@@ -696,6 +712,56 @@ on the quantized input.
 *NOTE*: Do not invoke this operator directly in Python. Graph rewrite pass is
 expected to invoke these operators.
 )doc");
+
+REGISTER_OP("_FusedQuantizedConv2D")
+    .Input("device_inputs: Tdevice_inputs")
+    .Input("host_inputs: Thost_inputs")
+    .Output("device_outputs: Tdevice_outputs")
+    .Output("host_outputs: Thost_outputs")
+    .Attr("Tinput: quantizedtype = DT_QUINT8")
+    .Attr("Tfilter: quantizedtype = DT_QINT8")
+    .Attr("Tbias: {float, qint32} = DT_QINT32")
+    .Attr("Tsummand: {float, quint8, qint8, qint32}")
+    .Attr("out_type: quantizedtype = DT_QINT32")
+    .Attr("Tdevice_inputs: list(type) >= 0 = []")
+    .Attr("Thost_inputs: list(type) >= 0")
+    .Attr("Tdevice_outputs: list(type) >= 0 = []")
+    .Attr("Thost_outputs: list(type) >= 0")
+    .Attr("data_format: string = 'NHWC'")
+    .Attr("strides: list(int)")
+    .Attr("is_filter_const: bool = true")
+    .Attr("is_bias_const: bool = true")
+    .Attr(GetPaddingAttrStringWithExplicit())
+    .Attr(GetExplicitPaddingsAttrString())
+    .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("fused_ops: list(string) = []")
+    .Attr("alpha: float = 0.0")
+    .SetShapeFn(shape_inference::FusedQuantizedConv2DShape);
+
+REGISTER_OP("_FusedQuantizedDepthwiseConv2D")
+    .Input("device_inputs: Tdevice_inputs")
+    .Input("host_inputs: Thost_inputs")
+    .Output("device_outputs: Tdevice_outputs")
+    .Output("host_outputs: Thost_outputs")
+    .Attr("Tinput: quantizedtype = DT_QUINT8")
+    .Attr("Tfilter: quantizedtype = DT_QINT8")
+    .Attr("Tbias: {float, qint32} = DT_QINT32")
+    .Attr("Tsummand: {float, quint8, qint8, qint32}")
+    .Attr("out_type: quantizedtype = DT_QINT32")
+    .Attr("Tdevice_inputs: list(type) >= 0 = []")
+    .Attr("Thost_inputs: list(type) >= 0")
+    .Attr("Tdevice_outputs: list(type) >= 0 = []")
+    .Attr("Thost_outputs: list(type) >= 0")
+    .Attr("data_format: string = 'NHWC'")
+    .Attr("strides: list(int)")
+    .Attr("is_filter_const: bool = true")
+    .Attr("is_bias_const: bool = true")
+    .Attr(GetPaddingAttrStringWithExplicit())
+    .Attr(GetExplicitPaddingsAttrString())
+    .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("fused_ops: list(string) = []")
+    .Attr("alpha: float = 0.0")
+    .SetShapeFn(shape_inference::FusedQuantizedDepthwiseConv2D);
 
 REGISTER_OP("_MklQuantizedConv2D")
     .Input("input: Tinput")
@@ -753,7 +819,7 @@ REGISTER_OP("_MklQuantizedConv2DAndRequantize")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(7), 0, &unused));
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DWithBias")
@@ -787,7 +853,7 @@ REGISTER_OP("_MklQuantizedConv2DWithBias")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       c->set_output(1, channel);
       c->set_output(2, channel);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DWithBiasAndRequantize")
@@ -824,7 +890,7 @@ REGISTER_OP("_MklQuantizedConv2DWithBiasAndRequantize")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &unused));
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DAndRelu")
@@ -855,7 +921,7 @@ REGISTER_OP("_MklQuantizedConv2DAndRelu")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
       c->set_output(1, channel);
       c->set_output(2, channel);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DAndReluAndRequantize")
@@ -890,7 +956,7 @@ REGISTER_OP("_MklQuantizedConv2DAndReluAndRequantize")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(7), 0, &unused));
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DWithBiasAndRelu")
@@ -924,7 +990,7 @@ REGISTER_OP("_MklQuantizedConv2DWithBiasAndRelu")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       c->set_output(1, channel);
       c->set_output(2, channel);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DWithBiasAndReluAndRequantize")
@@ -963,7 +1029,7 @@ REGISTER_OP("_MklQuantizedConv2DWithBiasAndReluAndRequantize")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DWithBiasSumAndRelu")
@@ -998,7 +1064,7 @@ REGISTER_OP("_MklQuantizedConv2DWithBiasSumAndRelu")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       c->set_output(1, channel);
       c->set_output(2, channel);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DWithBiasSumAndReluAndRequantize")
@@ -1041,7 +1107,7 @@ REGISTER_OP("_MklQuantizedConv2DWithBiasSumAndReluAndRequantize")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DWithBiasSignedSumAndReluAndRequantize")
@@ -1084,7 +1150,7 @@ REGISTER_OP("_MklQuantizedConv2DWithBiasSignedSumAndReluAndRequantize")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedConv2DPerChannel")
@@ -1115,7 +1181,7 @@ REGISTER_OP("_MklQuantizedConv2DPerChannel")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
       c->set_output(1, channel);
       c->set_output(2, channel);
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(R"doc(
 MKL-DNN implementation of QuantizedConv2D op.
@@ -1141,7 +1207,7 @@ REGISTER_OP("_MklDepthwiseConv2dNativeBackpropInput")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &s));
       TF_RETURN_IF_ERROR(c->WithRank(s, 4, &s));
       c->set_output(0, s);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklEinsum")
@@ -1172,7 +1238,7 @@ REGISTER_OP("_MklDepthwiseConv2dNativeBackpropFilter")
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(1, &s));
       TF_RETURN_IF_ERROR(c->WithRank(s, 4, &s));
       c->set_output(0, s);
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedMatMulWithBias")
@@ -1205,7 +1271,7 @@ REGISTER_OP("_MklQuantizedMatMulWithBias")
 
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedMatMulWithBiasAndRelu")
@@ -1238,7 +1304,7 @@ REGISTER_OP("_MklQuantizedMatMulWithBiasAndRelu")
 
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedMatMulWithBiasAndReluAndRequantize")
@@ -1275,7 +1341,7 @@ REGISTER_OP("_MklQuantizedMatMulWithBiasAndReluAndRequantize")
 
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedMatMulWithBiasAndDequantize")
@@ -1308,7 +1374,7 @@ REGISTER_OP("_MklQuantizedMatMulWithBiasAndDequantize")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(7), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
 
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedMatMulWithBiasAndRequantize")
@@ -1345,7 +1411,7 @@ REGISTER_OP("_MklQuantizedMatMulWithBiasAndRequantize")
 
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     });
 
 REGISTER_OP("_MklQuantizedDepthwiseConv2D")
@@ -1376,7 +1442,7 @@ REGISTER_OP("_MklQuantizedDepthwiseConv2D")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
       c->set_output(1, channel);
       c->set_output(2, channel);
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(R"doc(
 MKL-DNN implementation of quantized depthwise Conv2D.
@@ -1414,7 +1480,7 @@ REGISTER_OP("_MklQuantizedDepthwiseConv2DWithBias")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       c->set_output(1, channel);
       c->set_output(2, channel);
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(R"doc(
 MKL-DNN implementation of quantized depthwise Conv2D with Bias.
@@ -1453,7 +1519,7 @@ REGISTER_OP("_MklQuantizedDepthwiseConv2DWithBiasAndRelu")
       TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       c->set_output(1, channel);
       c->set_output(2, channel);
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(R"doc(
 MKL-DNN implementation of quantized depthwise Conv2D with Bias and Relu.
@@ -1497,7 +1563,7 @@ REGISTER_OP("_MklQuantizedDepthwiseConv2DWithBiasAndReluAndRequantize")
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
       c->set_output(1, c->Scalar());
       c->set_output(2, c->Scalar());
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(R"doc(
 MKL-DNN implementation of quantized depthwise Conv2D with Bias, Relu and Requantize.
@@ -1778,6 +1844,18 @@ Uses oneDNN APIs to perform fused batch normalization and relu.
 expected to invoke these operators.
 )doc");
 
+REGISTER_OP("_MklFusedMish")
+    .Input("features: T")
+    .Output("activations: T")
+    .Attr("T: {bfloat16, float}")
+    .SetShapeFn(shape_inference::UnchangedShape)
+    .Doc(R"doc(
+oneDNN version of the Mish operator. Uses oneDNN APIs to implement Mish operator.
+
+*NOTE*: Do not invoke this operator directly in Python. Graph rewrite pass is expected
+to invoke these operators.
+)doc");
+
 REGISTER_OP("_MklFusedBatchMatMulV2")
     .Input("x: T")
     .Input("y: T")
@@ -1788,6 +1866,11 @@ REGISTER_OP("_MklFusedBatchMatMulV2")
     .Attr("adj_y: bool = false")
     .Attr("num_args: int >= 0")
     .Attr("fused_ops: list(string) = []")
+    // Attributes for the FusedBatchNorm ------------------------------------ //
+    .Attr("epsilon: float = 0.0001")
+    // Attributes for the LeakyRelu ----------------------------------------- //
+    .Attr("leakyrelu_alpha: float = 0.2")
+    // ---------------------------------------------------------------------- //
     .SetShapeFn(shape_inference::BatchMatMulV2Shape)
     .Doc(R"doc(
 *NOTE*: Do not invoke this operator directly in Python. Grappler is
@@ -1813,6 +1896,21 @@ REGISTER_OP("_MklLayerNorm")
     .Attr("T: {float, bfloat16}")
     .Attr("epsilon: float = 0.001")
     .SetShapeFn(shape_inference::UnchangedShape);
+
+REGISTER_OP("_MklSoftmax")
+    .Input("logits: T")
+    .Output("softmax: T")
+    .Attr("T: {bfloat16, float} = DT_FLOAT")
+    .SetShapeFn([](InferenceContext* c) {
+      return shape_inference::UnchangedShapeWithRankAtLeast(c, 1);
+    })
+    .Doc(R"doc(
+oneDNN version of Softmax operator. Uses oneDNN APIs to perform softmax
+operation.
+
+*NOTE*: Do not invoke this operator directly in Python. Graph rewrite pass is
+expected to invoke these operators.
+)doc");
 
 }  // namespace tensorflow
 

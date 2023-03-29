@@ -85,27 +85,31 @@ inline float Int16SampleToFloat(int16_t data) {
 
 // Handles moving the data index forward, validating the arguments, and avoiding
 // overflow or underflow.
-Status IncrementOffset(int old_offset, size_t increment, size_t max_size,
+Status IncrementOffset(int old_offset, int64_t increment, size_t max_size,
                        int* new_offset) {
   if (old_offset < 0) {
     return errors::InvalidArgument("Negative offsets are not allowed: ",
                                    old_offset);
   }
+  if (increment < 0) {
+    return errors::InvalidArgument("Negative increment is not allowed: ",
+                                   increment);
+  }
   if (old_offset > max_size) {
     return errors::InvalidArgument("Initial offset is outside data range: ",
                                    old_offset);
   }
-  *new_offset = old_offset + increment;
-  if (*new_offset > max_size) {
+  int64_t sum = old_offset + increment;
+  if (sum > max_size) {
     return errors::InvalidArgument("Data too short when trying to read string");
   }
   // See above for the check that the input offset is positive. If it's negative
   // here then it means that there's been an overflow in the arithmetic.
-  if (*new_offset < 0) {
-    return errors::InvalidArgument("Offset too large, overflowed: ",
-                                   *new_offset);
+  if (sum < 0) {
+    return errors::InvalidArgument("Offset too large, overflowed: ", sum);
   }
-  return Status::OK();
+  *new_offset = sum;
+  return OkStatus();
 }
 
 Status ExpectText(const std::string& data, const std::string& expected_text,
@@ -120,7 +124,7 @@ Status ExpectText(const std::string& data, const std::string& expected_text,
                                    " but found ", found_text);
   }
   *offset = new_offset;
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ReadString(const std::string& data, int expected_length,
@@ -130,7 +134,7 @@ Status ReadString(const std::string& data, int expected_length,
       IncrementOffset(*offset, expected_length, data.size(), &new_offset));
   *value = std::string(data.begin() + *offset, data.begin() + new_offset);
   *offset = new_offset;
-  return Status::OK();
+  return OkStatus();
 }
 
 template <typename T>
@@ -205,7 +209,7 @@ Status EncodeAudioAsS16LEWav(const float* audio, size_t sample_rate,
     core::EncodeFixed16(&data[i * kBytesPerSample],
                         static_cast<uint16>(sample));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 template Status EncodeAudioAsS16LEWav<std::string>(const float* audio,
@@ -341,7 +345,7 @@ Status DecodeLin16WaveAsFloatVector(const std::string& wav_string,
   if (!was_data_found) {
     return errors::InvalidArgument("No data chunk found in WAV");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace wav

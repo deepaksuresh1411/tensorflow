@@ -35,9 +35,10 @@ update_mavg = mavg.assign_sub((mavg - var) * (1 - decay))
 """
 # pylint: disable=g-bad-name
 
-from tensorflow.compiler.xla.experimental.xla_sharding import xla_sharding
+from tensorflow.python.compiler.xla.experimental import xla_sharding
 from tensorflow.python.distribute import distribution_strategy_context
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.ops import variable_scope
@@ -103,8 +104,13 @@ def _create_slot_var(primary,
               slice_info.var_shape[:n]))
   # pylint: enable=protected-access
 
-  # Copy XLA sharding attributes from primary.
-  if copy_xla_sharding:
+  # Copy XLA sharding attributes from the primary if the slot variable has the
+  # same rank as the primary.
+  def _has_same_rank(primary_shape, slot_shape):
+    return (primary_shape.rank is not None and slot_shape.rank is not None and
+            primary_shape.rank == slot_shape.rank)
+
+  if copy_xla_sharding and _has_same_rank(primary.shape, slot.shape):
     slot = xla_sharding.copy_sharding(primary, slot, use_sharding_op=False)
   return slot
 
@@ -258,7 +264,10 @@ def create_zeros_slot(primary,
         copy_xla_sharding=copy_xla_sharding)
   else:
     if isinstance(primary, variables.Variable):
-      slot_shape = array_ops.shape(primary.initialized_value())
+      slot_shape = array_ops.shape(control_flow_ops.cond(
+          variables.is_variable_initialized(primary),
+          primary.read_value,
+          lambda: primary.initial_value))
     else:
       slot_shape = array_ops.shape(primary)
     val = array_ops.zeros(slot_shape, dtype=dtype)

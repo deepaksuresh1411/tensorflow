@@ -31,10 +31,9 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/hash/hash.h"
-#include "absl/memory/memory.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/pytypes.h"
-#include "pybind11/stl.h"
+#include "pybind11/pybind11.h"  // from @pybind11
+#include "pybind11/pytypes.h"  // from @pybind11
+#include "pybind11/stl.h"  // from @pybind11
 
 namespace xla {
 
@@ -112,15 +111,15 @@ class PyTreeDef {
   // objects in the case of custom pytype handlers.
   static std::pair<std::vector<pybind11::object>, std::unique_ptr<PyTreeDef>>
   Flatten(pybind11::handle x,
-          absl::optional<pybind11::function> leaf_predicate = absl::nullopt);
+          std::optional<pybind11::function> leaf_predicate = std::nullopt);
 
   // Recursive helper used to implement Flatten().
   void FlattenInto(
       pybind11::handle handle, std::vector<pybind11::object>& leaves,
-      absl::optional<pybind11::function> leaf_predicate = absl::nullopt);
+      std::optional<pybind11::function> leaf_predicate = std::nullopt);
   void FlattenInto(
       pybind11::handle handle, absl::InlinedVector<pybind11::object, 2>& leaves,
-      absl::optional<pybind11::function> leaf_predicate = absl::nullopt);
+      std::optional<pybind11::function> leaf_predicate = std::nullopt);
 
   // Tests whether the given list is a flat list of leaves.
   static bool AllLeaves(const pybind11::iterable& x);
@@ -145,8 +144,7 @@ class PyTreeDef {
   std::vector<std::unique_ptr<PyTreeDef>> Children() const;
 
   // Maps a function over a PyTree structure, applying f_leaf to each leaf, and
-  // f_node to each container node.
-  // TODO(phawkins): use flattening everywhere instead and delete this method.
+  // f_node(node, node_data) to each container node.
   pybind11::object Walk(const pybind11::function& f_node,
                         pybind11::handle f_leaf,
                         pybind11::iterable leaves) const;
@@ -172,6 +170,14 @@ class PyTreeDef {
 
   std::string ToString() const;
 
+  // Transforms the PyTreeDef into a pickleable object. Used to implement
+  // `PyTreeDef.__getstate__`.
+  pybind11::object ToPickleable() const;
+
+  // Transforms the object returned by `ToPickleable()` back to PyTreeDef. Used
+  // to implement `PyTreeDef.__setstate__`.
+  static PyTreeDef FromPickleable(pybind11::object pickleable);
+
  private:
   struct Node {
     PyTreeKind kind = PyTreeKind::kLeaf;
@@ -180,9 +186,16 @@ class PyTreeDef {
     int arity = 0;
 
     // Kind-specific auxiliary data. For a kNamedTuple, contains the tuple type
-    // object. For a kDict, contains a sorted list of keys. For a kCustom type,
-    // contains the auxiliary data returned by the `to_iterable` function.
+    // object. For a kDict, use `sorted_dict_keys` field below. For a kCustom
+    // type, contains the auxiliary data returned by the `to_iterable` function.
     pybind11::object node_data;
+
+    // Kind-specific auxiliary data specialized for kDict. Use a c++ vector
+    // to hold the sorted dict keys instead of a py::list to avoid creating
+    // a new python list object when flattening kDict. For deeply nested dict,
+    // using c++ vector instead of py::list avoids creating too many python
+    // objects that make python gc sweep slow.
+    std::vector<pybind11::object> sorted_dict_keys;
 
     // Custom type registration. Must be null for non-custom types.
     const PyTreeTypeRegistry::Registration* custom = nullptr;
@@ -214,9 +227,8 @@ class PyTreeDef {
                             PyTreeTypeRegistry::Registration const** custom);
 
   template <typename T>
-  void FlattenIntoImpl(
-      pybind11::handle handle, T& leaves,
-      const absl::optional<pybind11::function>& leaf_predicate);
+  void FlattenIntoImpl(pybind11::handle handle, T& leaves,
+                       const std::optional<pybind11::function>& leaf_predicate);
 
   template <typename T>
   pybind11::object UnflattenImpl(T leaves) const;

@@ -36,7 +36,8 @@ References:
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import array_ops_stack
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import gen_linalg_ops
 from tensorflow.python.ops import linalg_ops
 from tensorflow.python.ops import math_ops
@@ -47,10 +48,12 @@ from tensorflow.python.ops.linalg import linalg_impl as _linalg
 def _MatrixInverseGrad(op, grad):
   """Gradient for MatrixInverse."""
   ainv = op.outputs[0]
+  op_adjoint = op.get_attr("adjoint")
   return -math_ops.matmul(  # pylint: disable=invalid-unary-operand-type
       ainv,
-      math_ops.matmul(grad, ainv, adjoint_b=True),
-      adjoint_a=True)
+      math_ops.matmul(grad, ainv, adjoint_a=op_adjoint,
+                      adjoint_b=not op_adjoint),
+      adjoint_a=not op_adjoint)
 
 
 @ops.RegisterGradient("Einsum")
@@ -135,7 +138,8 @@ def _EinsumGrad(op, grad):
     # labels. If the same label appears multiple times, get the left-most axis.
     reduced_axes = [_GetAxisFromLabel(subscripts, s) for s in reduced_subs]
     # Get the corresponding dimensions for each reduced axis.
-    reduced_dims = array_ops.stack([input_shape[ax] for ax in reduced_axes])
+    reduced_dims = array_ops_stack.stack(
+        [input_shape[ax] for ax in reduced_axes])
     return reduced_subs, reduced_dims, reduced_axes
 
   def _GetGradReduced(output_grad, output_subs, input_subs, input_shape,
@@ -638,9 +642,9 @@ def _MatrixSolveLsGrad(op, grad):
     # We have to defer determining the shape to runtime and use
     # conditional execution of the appropriate graph.
     matrix_shape = array_ops.shape(op.inputs[0])[-2:]
-    return control_flow_ops.cond(matrix_shape[-2] >= matrix_shape[-1],
-                                 lambda: _Overdetermined(op, grad),
-                                 lambda: _Underdetermined(op, grad))
+    return cond.cond(matrix_shape[-2] >= matrix_shape[-1],
+                     lambda: _Overdetermined(op, grad),
+                     lambda: _Underdetermined(op, grad))
 
 
 @ops.RegisterGradient("BandedTriangularSolve")
@@ -1029,7 +1033,7 @@ def _TransposeTridiagonalMatrix(diags):
     subdiag_pad = array_ops.concat((zeros, array_ops.constant([[1, 0]])),
                                    axis=0)
     subdiag = array_ops.pad(diags[..., 0, :-1], subdiag_pad)
-  return array_ops.stack([superdiag, diag, subdiag], axis=-2)
+  return array_ops_stack.stack([superdiag, diag, subdiag], axis=-2)
 
 
 def _MatmulExtractingThreeDiagonals(x, y_tr):
@@ -1068,4 +1072,4 @@ def _MatmulExtractingThreeDiagonals(x, y_tr):
         (zeros, array_ops.constant([[1, 0], [0, 0]])), axis=0)
     subdiag = math_ops.reduce_sum(
         x * array_ops.pad(y_tr[..., :-1, :], subdiag_pad), axis=-1)
-  return array_ops.stack([superdiag, diag, subdiag], axis=-2)
+  return array_ops_stack.stack([superdiag, diag, subdiag], axis=-2)

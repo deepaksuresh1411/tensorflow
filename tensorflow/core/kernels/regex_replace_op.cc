@@ -22,7 +22,6 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/thread_annotations.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 namespace {
@@ -60,7 +59,7 @@ Status InternalCompute(const RE2& regex, const string& rewrite,
     }
     output_flat(i) = std::move(buf);
   }
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace
 
@@ -127,7 +126,7 @@ class StaticRegexReplaceOp : public OpKernel {
   explicit StaticRegexReplaceOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
     string pattern;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("pattern", &pattern));
-    re_ = MakeUnique<RE2>(pattern);
+    re_ = std::make_unique<RE2>(pattern);
     OP_REQUIRES(ctx, re_->ok(),
                 errors::InvalidArgument("Invalid pattern: ", pattern,
                                         ", error: ", re_->error()));

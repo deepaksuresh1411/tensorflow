@@ -26,16 +26,16 @@ limitations under the License.
 #include "absl/strings/escaping.h"
 #include "absl/strings/numbers.h"
 #include "tensorflow/lite/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_types.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/c_api_types.h"
+#include "tensorflow/lite/core/c/common.h"
 #if !defined(__APPLE__)
 #include "tensorflow/lite/delegates/flex/delegate.h"
 #endif
+#include "tensorflow/lite/core/kernels/register.h"
 #include "tensorflow/lite/kernels/custom_ops_register.h"
 #include "tensorflow/lite/kernels/gradient/gradient_ops.h"
 #include "tensorflow/lite/kernels/parse_example/parse_example.h"
 #include "tensorflow/lite/kernels/perception/perception_ops.h"
-#include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/kernels/register_ref.h"
 #include "tensorflow/lite/kernels/test_delegate_providers.h"
 #include "tensorflow/lite/signature_runner.h"
@@ -360,6 +360,8 @@ bool TfLiteDriver::DataExpectation::Check(bool verbose,
       return TypedCheck<uint8_t, float>(verbose, tensor);
     case kTfLiteInt8:
       return TypedCheck<int8_t, float>(verbose, tensor);
+    case kTfLiteUInt16:
+      return TypedCheck<uint16_t, float>(verbose, tensor);
     case kTfLiteInt16:
       return TypedCheck<int16_t, float>(verbose, tensor);
     case kTfLiteBool:
@@ -374,6 +376,8 @@ bool TfLiteDriver::DataExpectation::Check(bool verbose,
                                                                     tensor);
     case kTfLiteFloat64:
       return TypedCheck<double, double>(verbose, tensor);
+    case kTfLiteFloat16:
+      return TypedCheck<Eigen::half, float>(verbose, tensor);
     default:
       fprintf(stderr, "Unsupported type %d in Check\n", tensor.type);
       return false;
@@ -392,12 +396,12 @@ TfLiteDriver::TfLiteDriver(DelegateType delegate_type, bool reference_kernel)
       absolute_threshold_(kAbsoluteThreshold),
       quantization_error_multiplier_(kQuantizationErrorMultiplier) {
   if (reference_kernel) {
-    resolver_.reset(new ops::builtin::BuiltinRefOpResolver);
+    resolver_ = std::make_unique<ops::builtin::BuiltinRefOpResolver>();
   } else {
     // TODO(b/168278077): change back to use BuiltinOpResolver after zip tests
     // are fully validated against TfLite delegates.
-    resolver_.reset(
-        new ops::builtin::BuiltinOpResolverWithoutDefaultDelegates());
+    resolver_ = std::make_unique<
+        ops::builtin::BuiltinOpResolverWithoutDefaultDelegates>();
     ops::builtin::BuiltinOpResolver* builtin_op_resolver_ =
         reinterpret_cast<ops::builtin::BuiltinOpResolver*>(resolver_.get());
     builtin_op_resolver_->AddCustom("IRFFT2D",
@@ -640,6 +644,12 @@ void TfLiteDriver::SetInput(const string& name, const string& csv_values) {
       SetTensorData(values, tensor->data.raw);
       break;
     }
+    case kTfLiteUInt16: {
+      const auto& values = testing::Split<uint16_t>(csv_values, ",");
+      if (!CheckSizes<uint16_t>(tensor->bytes, values.size())) return;
+      SetTensorData(values, tensor->data.raw);
+      break;
+    }
     case kTfLiteBool: {
       const auto& values = testing::Split<bool>(csv_values, ",");
       if (!CheckSizes<bool>(tensor->bytes, values.size())) return;
@@ -670,6 +680,15 @@ void TfLiteDriver::SetInput(const string& name, const string& csv_values) {
       SetTensorData(values, tensor->data.raw);
       break;
     }
+    case kTfLiteFloat16: {
+      const auto& values = testing::Split<Eigen::half>(csv_values, ",");
+      for (auto k : values) {
+        TFLITE_LOG(INFO) << "input" << k;
+      }
+      if (!CheckSizes<Eigen::half>(tensor->bytes, values.size())) return;
+      SetTensorData(values, tensor->data.raw);
+      break;
+    }
     default:
       Invalidate(absl::StrCat("Unsupported tensor type ",
                               TfLiteTypeGetName(tensor->type),
@@ -696,9 +715,8 @@ void TfLiteDriver::SetExpectation(const string& name,
   if (expected_output_.count(id) != 0) {
     Invalidate(absl::StrCat("Overridden expectation for tensor '", id, "'"));
   }
-  expected_output_[id].reset(
-      new DataExpectation(relative_threshold_, absolute_threshold_,
-                          quantization_error_multiplier_));
+  expected_output_[id] = std::make_unique<DataExpectation>(
+      relative_threshold_, absolute_threshold_, quantization_error_multiplier_);
 
   if (InterpretAsQuantized(*tensor)) {
     expected_output_[id]->SetData<float>(csv_values);
@@ -727,6 +745,9 @@ void TfLiteDriver::SetExpectation(const string& name,
     case kTfLiteInt8:
       expected_output_[id]->SetData<int8_t>(csv_values);
       break;
+    case kTfLiteUInt16:
+      expected_output_[id]->SetData<uint16_t>(csv_values);
+      break;
     case kTfLiteInt16:
       expected_output_[id]->SetData<int16_t>(csv_values);
       break;
@@ -745,6 +766,9 @@ void TfLiteDriver::SetExpectation(const string& name,
     case kTfLiteComplex128:
       expected_output_[id]->SetData<std::complex<double>>(csv_values);
       break;
+    case kTfLiteFloat16:
+      expected_output_[id]->SetData<Eigen::half>(csv_values);
+      break;
     default:
       Invalidate(absl::StrCat("Unsupported tensor type ",
                               TfLiteTypeGetName(tensor->type),
@@ -760,7 +784,7 @@ void TfLiteDriver::SetShapeExpectation(const string& name,
     Invalidate(
         absl::StrCat("Overridden shape expectation for tensor '", id, "'"));
   }
-  expected_output_shape_[id].reset(new ShapeExpectation(csv_values));
+  expected_output_shape_[id] = std::make_unique<ShapeExpectation>(csv_values);
 }
 
 void TfLiteDriver::ResetLSTMStateTensors() {
@@ -789,6 +813,8 @@ string TfLiteDriver::TensorValueToCsvString(const TfLiteTensor* tensor) {
       return Join(tensor->data.uint8, num_elements, ",");
     case kTfLiteInt8:
       return Join(tensor->data.int8, num_elements, ",");
+    case kTfLiteUInt16:
+      return Join(tensor->data.ui16, num_elements, ",");
     case kTfLiteInt16:
       return Join(tensor->data.i16, num_elements, ",");
     case kTfLiteBool:

@@ -30,8 +30,10 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/file_system_helper.h"
+#include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/protobuf/saved_model.pb.h"
-#include "tensorflow/core/util/tensor_bundle/byte_swap.h"
+#include "tensorflow/core/util/tensor_bundle/byte_swap_tensor.h"
 
 namespace tensorflow {
 namespace {
@@ -45,28 +47,36 @@ Status ReadSavedModel(absl::string_view export_dir,
   const std::string saved_model_pb_path =
       io::JoinPath(export_dir, kSavedModelFilenamePb);
 
-  if (Env::Default()->FileExists(saved_model_pb_path).ok()) {
+  TF_ASSIGN_OR_RETURN(
+      bool saved_model_pb_exists,
+      internal::FileExists(Env::Default(), saved_model_pb_path));
+  if (saved_model_pb_exists) {
     Status result =
         ReadBinaryProto(Env::Default(), saved_model_pb_path, saved_model_proto);
     if (result.ok()) {
-      metrics::SavedModelRead(saved_model::GetWriteVersion(*saved_model_proto))
+      metrics::SavedModelReadCount(
+          saved_model::GetWriteVersion(*saved_model_proto))
           .IncrementBy(1);
     }
     return result;
   }
   const std::string saved_model_pbtxt_path =
       io::JoinPath(export_dir, kSavedModelFilenamePbTxt);
-  if (Env::Default()->FileExists(saved_model_pbtxt_path).ok()) {
+  TF_ASSIGN_OR_RETURN(
+      bool saved_model_pbtxt_exists,
+      internal::FileExists(Env::Default(), saved_model_pbtxt_path));
+  if (saved_model_pbtxt_exists) {
     Status result = ReadTextProto(Env::Default(), saved_model_pbtxt_path,
                                   saved_model_proto);
     if (result.ok()) {
-      metrics::SavedModelRead(saved_model::GetWriteVersion(*saved_model_proto))
+      metrics::SavedModelReadCount(
+          saved_model::GetWriteVersion(*saved_model_proto))
           .IncrementBy(1);
     }
     return result;
   }
   return Status(
-      error::Code::NOT_FOUND,
+      absl::StatusCode::kNotFound,
       strings::StrCat("Could not find SavedModel .pb or .pbtxt at supplied "
                       "export directory path: ",
                       export_dir,
@@ -91,13 +101,13 @@ Status FindMetaGraphDef(const std::unordered_set<string>& tags,
       *meta_graph_def = std::move(graph_def);
       // Correct the endiness of Tensor content on big-endian system
       if (!port::kLittleEndian) {
-        TF_RETURN_IF_ERROR(ByteSwapTensorContent(meta_graph_def));
+        TF_RETURN_IF_ERROR(ByteSwapTensorContentInMetaGraphDef(meta_graph_def));
       }
-      return Status::OK();
+      return OkStatus();
     }
   }
   return Status(
-      error::Code::NOT_FOUND,
+      absl::StatusCode::kNotFound,
       strings::StrCat(
           "Could not find meta graph def matching supplied tags: { ",
           absl::StrJoin(tags, " "),
@@ -113,7 +123,7 @@ Status ReadMetaGraphDefFromSavedModel(const string& export_dir,
   TF_RETURN_IF_ERROR(ReadSavedModel(export_dir, &saved_model_proto));
   TF_RETURN_IF_ERROR(
       FindMetaGraphDef(tags, &saved_model_proto, meta_graph_def));
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ReadSavedModelDebugInfoIfPresent(
@@ -124,14 +134,16 @@ Status ReadSavedModelDebugInfoIfPresent(
 
   const string debug_info_pb_path =
       io::JoinPath(export_dir, "debug", "saved_model_debug_info.pb");
-  if (Env::Default()->FileExists(debug_info_pb_path).ok()) {
+  TF_ASSIGN_OR_RETURN(bool debug_info_pb_exists,
+                      internal::FileExists(Env::Default(), debug_info_pb_path));
+  if (debug_info_pb_exists) {
     GraphDebugInfo debug_info;
     TF_RETURN_IF_ERROR(
         ReadBinaryProto(Env::Default(), debug_info_pb_path, &debug_info));
     *debug_info_proto =
         absl::make_unique<GraphDebugInfo>(std::move(debug_info));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

@@ -96,6 +96,16 @@ absl::Status LoadOpenCL() {
     LoadOpenCLFunctions(libopencl, false);
     return absl::OkStatus();
   }
+  // Check if OpenCL functions are found via OpenCL ICD Loader.
+  LoadOpenCLFunctions(libopencl, false);
+  if (clGetPlatformIDs != nullptr) {
+    cl_uint num_platforms;
+    cl_int status = clGetPlatformIDs(0, nullptr, &num_platforms);
+    if (status == CL_SUCCESS && num_platforms != 0) {
+      return absl::OkStatus();
+    }
+    return absl::UnknownError("OpenCL is not supported.");
+  }
   // record error
   std::string error(dlerror());
   return absl::UnknownError(
@@ -233,6 +243,15 @@ void LoadOpenCLFunctions(void* libopencl, bool use_wrapper) {
   LoadFunction(clEnqueueAcquireEGLObjectsKHR);
   LoadFunction(clEnqueueReleaseEGLObjectsKHR);
 
+  // cl_khr_command_buffer extension
+  LoadFunction(clCreateCommandBufferKHR);
+  LoadFunction(clRetainCommandBufferKHR);
+  LoadFunction(clReleaseCommandBufferKHR);
+  LoadFunction(clFinalizeCommandBufferKHR);
+  LoadFunction(clEnqueueCommandBufferKHR);
+  LoadFunction(clCommandNDRangeKernelKHR);
+  LoadFunction(clGetCommandBufferInfoKHR);
+
   LoadQcomExtensionFunctions();
 }
 
@@ -353,6 +372,15 @@ PFN_clCreateEventFromEGLSyncKHR clCreateEventFromEGLSyncKHR;
 PFN_clCreateFromEGLImageKHR clCreateFromEGLImageKHR;
 PFN_clEnqueueAcquireEGLObjectsKHR clEnqueueAcquireEGLObjectsKHR;
 PFN_clEnqueueReleaseEGLObjectsKHR clEnqueueReleaseEGLObjectsKHR;
+
+// cl_khr_command_buffer extension
+PFN_clCreateCommandBufferKHR clCreateCommandBufferKHR;
+PFN_clRetainCommandBufferKHR clRetainCommandBufferKHR;
+PFN_clReleaseCommandBufferKHR clReleaseCommandBufferKHR;
+PFN_clFinalizeCommandBufferKHR clFinalizeCommandBufferKHR;
+PFN_clEnqueueCommandBufferKHR clEnqueueCommandBufferKHR;
+PFN_clCommandNDRangeKernelKHR clCommandNDRangeKernelKHR;
+PFN_clGetCommandBufferInfoKHR clGetCommandBufferInfoKHR;
 
 DEFINE_QCOM_FUNCTION_PTRS
 

@@ -16,8 +16,10 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/core/common_runtime/eager/context.h"
 #include "tensorflow/core/framework/device.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/statusor.h"
 #include "tfrt/cpp_tests/test_util.h""  // from @tf_runtime
 #include "tfrt/host_context/host_context.h"  // from @tf_runtime
 
@@ -27,25 +29,6 @@ namespace {
 using ::testing::HasSubstr;
 using ::testing::SizeIs;
 using ::testing::StartsWith;
-
-TEST(UtilsTest, ConvertTfDeviceNameToTfrt) {
-  const std::string device_name_prefix =
-      "/job:localhost/replica:0/task:0/device:CPU:0";
-  tensorflow::StaticDeviceMgr device_mgr(
-      tensorflow::DeviceFactory::NewDevice("CPU", {}, device_name_prefix));
-  auto eager_context = new tensorflow::EagerContext(
-      tensorflow::SessionOptions(),
-      tensorflow::ContextDevicePlacementPolicy::DEVICE_PLACEMENT_SILENT,
-      /*async=*/false, &device_mgr, /*device_mgr_owned=*/false,
-      /*rendezvous=*/nullptr);
-
-  EXPECT_FALSE(ConvertTfDeviceNameToTfrt("unknown_device", eager_context));
-  EXPECT_THAT(std::string(*ConvertTfDeviceNameToTfrt(device_name_prefix.c_str(),
-                                                     eager_context)),
-              StartsWith(device_name_prefix));
-
-  eager_context->Unref();
-}
 
 TEST(UtilsTest, ConvertTfDTypeToTfrtDType) {
 #define DTYPE(TFRT_DTYPE, TF_DTYPE)                          \
@@ -84,6 +67,82 @@ TEST(UtilsTest, AddDummyTfrtDevices) {
   RCReference<Device> device1 =
       host_ctx->GetDeviceManager()->GetDeviceRef<Device>("no-such-device");
   EXPECT_FALSE(device1);
+}
+
+TEST(UtilsTest, ReturnIfErrorInImport) {
+  auto status = []() {
+    RETURN_IF_ERROR_IN_IMPORT(
+        tensorflow::errors::CancelledWithPayloads("msg", {{"a", "b"}}));
+    return tensorflow::OkStatus();
+  }();
+  EXPECT_FALSE(status.ok());
+  EXPECT_STREQ(status.error_message().c_str(), "GraphDef proto -> MLIR: msg");
+  EXPECT_EQ(status.GetPayload("a"), "b");
+}
+
+TEST(UtilsTest, ReturnIfErrorInCompile) {
+  auto status = []() {
+    RETURN_IF_ERROR_IN_COMPILE(
+        tensorflow::errors::CancelledWithPayloads("msg", {{"a", "b"}}));
+    return tensorflow::OkStatus();
+  }();
+  EXPECT_FALSE(status.ok());
+  EXPECT_STREQ(status.error_message().c_str(),
+               "TF dialect -> TFRT dialect, compiler issue, please contact "
+               "the TFRT team: msg");
+  EXPECT_EQ(status.GetPayload("a"), "b");
+}
+
+TEST(UtilsTest, ReturnIfErrorInInit) {
+  auto status = []() {
+    RETURN_IF_ERROR_IN_INIT(
+        tensorflow::errors::CancelledWithPayloads("msg", {{"a", "b"}}));
+    return tensorflow::OkStatus();
+  }();
+  EXPECT_FALSE(status.ok());
+  EXPECT_STREQ(status.error_message().c_str(), "Initialize TFRT: msg");
+  EXPECT_EQ(status.GetPayload("a"), "b");
+}
+
+TEST(UtilsTest, AssignOrReturnInImport) {
+  auto status = []() {
+    ASSIGN_OR_RETURN_IN_IMPORT(
+        [[maybe_unused]] auto unused_value,
+        tensorflow::StatusOr<int>(
+            tensorflow::errors::CancelledWithPayloads("msg", {{"a", "b"}})));
+    return tensorflow::OkStatus();
+  }();
+  EXPECT_FALSE(status.ok());
+  EXPECT_STREQ(status.error_message().c_str(), "GraphDef proto -> MLIR: msg");
+  EXPECT_EQ(status.GetPayload("a"), "b");
+}
+
+TEST(UtilsTest, AssignOrReturnInCompile) {
+  auto status = []() {
+    ASSIGN_OR_RETURN_IN_COMPILE(
+        [[maybe_unused]] auto unused_value,
+        tensorflow::StatusOr<int>(
+            tensorflow::errors::CancelledWithPayloads("msg", {{"a", "b"}})));
+    return tensorflow::OkStatus();
+  }();
+  EXPECT_FALSE(status.ok());
+  EXPECT_STREQ(status.error_message().c_str(),
+               "TF dialect -> TFRT dialect, compiler issue, please contact "
+               "the TFRT team: msg");
+  EXPECT_EQ(status.GetPayload("a"), "b");
+}
+
+TEST(UtilsTest, AssignOrReturnInInit) {
+  auto status = []() {
+    ASSIGN_OR_RETURN_IN_INIT(
+        [[maybe_unused]] auto unused_value,
+        tensorflow::StatusOr<int>(
+            tensorflow::errors::CancelledWithPayloads("msg", {{"a", "b"}})));
+    return tensorflow::OkStatus();
+  }();
+  EXPECT_FALSE(status.ok());
+  EXPECT_STREQ(status.error_message().c_str(), "Initialize TFRT: msg");
+  EXPECT_EQ(status.GetPayload("a"), "b");
 }
 
 }  // namespace

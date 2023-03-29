@@ -28,7 +28,6 @@ limitations under the License.
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 
@@ -75,7 +74,7 @@ static Status CreateXlaKernel(FunctionLibraryRuntime* flr,
                                     input_memory_types, output_memory_types,
                                     flr->graph_def_version(), &s);
 
-  *kernel = absl::make_unique<XlaLocalLaunchBase>(
+  *kernel = std::make_unique<XlaLocalLaunchBase>(
       &construction, constant_arg_indices, resource_arg_indices, function,
       /*has_ref_vars=*/false);
   return s;

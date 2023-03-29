@@ -26,6 +26,7 @@ from tensorflow.python.distribute import strategy_test_lib
 from tensorflow.python.distribute import tpu_strategy as tpu_lib
 from tensorflow.python.distribute import tpu_values
 from tensorflow.python.distribute.cluster_resolver import tpu_cluster_resolver
+from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
 from tensorflow.python.eager import function
 from tensorflow.python.eager import remote
@@ -42,7 +43,7 @@ from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import test_util
 from tensorflow.python.framework import type_spec
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import control_flow_switch_case
 from tensorflow.python.ops import embedding_ops
 from tensorflow.python.ops import gen_dataset_ops
 from tensorflow.python.ops import logging_ops
@@ -55,8 +56,8 @@ from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.platform import flags
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.tpu import device_assignment as device_assignment_lib
-from tensorflow.python.tpu import tpu
 from tensorflow.python.tpu import tpu_hardware_feature
+from tensorflow.python.tpu import tpu_replication
 from tensorflow.python.tpu import tpu_strategy_util
 from tensorflow.python.training import server_lib
 from tensorflow.python.util import nest
@@ -113,8 +114,10 @@ class TPUTest(test.TestCase):
   # In this case, the entire computation in foo is compiled using JIT
   # compilation and contains unsupported ops that should be outside compiled.
   def test_single_tpu_jit_compile_with_outside_compilation(self):
+    context.enable_jit_compile_rewrite()
+    get_tpu_strategy(True)
     config.set_soft_device_placement(True)
-    with ops.device("/device:TPU:0"):
+    with ops.device("/device:TPU:1"):
       a = variables.Variable(1)
 
     def get_a_plus_one():
@@ -131,12 +134,9 @@ class TPUTest(test.TestCase):
       b = c + get_a_plus_one()
       return b + 1
 
-    # TODO(b/222338429): Replace this assert once outside compilation is
-    # supported with jit_compile.
-    with self.assertRaises(errors.InvalidArgumentError):
-      with ops.device("/device:TPU:0"):
-        foo(a)
-    # self.assertAllEqual(6, result)
+    with ops.device("/device:TPU:1"):
+      result = foo(a)
+    self.assertAllEqual(33, result)
 
   # In this case, each of the ops in the TPU device scope are compiled and run
   # individually.
@@ -382,7 +382,7 @@ class TPUStrategyTest(test.TestCase, parameterized.TestCase):
           1: (lambda: do_inference("/device:TPU:1", inference_fn, 1)),
       }
       branch_index = inference_iteration.assign_add(1, use_locking=True) % 2
-      return control_flow_ops.switch_case(branch_index, branch_fns)
+      return control_flow_switch_case.switch_case(branch_index, branch_fns)
 
     self.assertAllEqual(2., run_inference(1))  # Use TPU core 0.
     self.assertAllEqual(3., run_inference(1))  # Use TPU core 1.
@@ -975,7 +975,7 @@ class TPUStrategyTest(test.TestCase, parameterized.TestCase):
     def sparse_lookup(iterator):
 
       def tpu_function(sparse):
-        lookup = tpu.outside_compilation(
+        lookup = tpu_replication.outside_compilation(
             embedding_ops.safe_embedding_lookup_sparse, table, sparse)
         return math_ops.reduce_sum(lookup, axis=0)
 
@@ -1140,6 +1140,10 @@ class TPUStrategyTest(test.TestCase, parameterized.TestCase):
     self.assertIsInstance(
         strategy.extended.tpu_hardware_feature.embedding_feature,
         tpu_hardware_feature.HardwareFeature.EmbeddingFeature)
+
+  def test_get_tpu_cluster_resolver(self, enable_packed_var):
+    strategy = get_tpu_strategy(enable_packed_var)
+    self.assertIsNotNone(strategy.cluster_resolver)
 
 
 @test_util.with_eager_op_as_function

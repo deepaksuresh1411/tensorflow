@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_FLAGS_H_
 #define TENSORFLOW_COMPILER_JIT_FLAGS_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,9 @@ struct MarkForCompilationPassFlags {
   // If non-empty, limit XLA clustering to the following TF operations.
   string tf_xla_ops_to_cluster;
 
+  // If non-empty, remove following operations from XLA clustering excludelist.
+  string tf_xla_cluster_exclude_ops;
+
   // Dump graphs during XLA compilation.
   bool tf_xla_clustering_debug;
 
@@ -89,6 +93,14 @@ struct MarkForCompilationPassFlags {
   // If non-empty, JIT-compiled executables are saved to and loaded from the
   // specified file system directory path.
   std::string tf_xla_persistent_cache_directory;
+
+  // If true, entries loaded into the XLA compile cache will not have their
+  // signatures checked strictly. This should generally not be disabled except
+  // for debugging. Defaults to false.
+  bool tf_xla_disable_strict_signature_checks;
+
+  // Specifies the persistance cache prefix. Default is "xla_compile_cache"
+  string tf_xla_persistent_cache_prefix;
 };
 
 // Flags associated with the XLA bridge's xla_device module.
@@ -111,6 +123,9 @@ struct XlaOpsCommonFlags {
   // If true, _XlaCompile compiles the cluster asynchronously with respect to
   // the main execution. The fallback path is taken while compilation happens.
   bool tf_xla_async_compilation;
+  // If true, uses Device API (PjRt) for single device compilation. Defaults to
+  // false.
+  bool tf_xla_use_device_api;
 };
 
 // Flags for the build_xla_ops pass.
@@ -136,30 +151,29 @@ struct BuildXlaOpsPassFlags {
   bool tf_xla_disable_constant_folding;
 };
 
-// Flags for the IntroduceFloatingPointJitter pass.
-struct IntroduceFloatingPointJitterPassFlags {
-  // The amount of jitter to introduce.  This amount is added to each element in
-  // the tensors named in `tensor_names.
-  float jitter_amount;
-
-  // The Tensors to add the jitter to.  The tensors are named in the TensorId
-  // format of <node name>:<output idx>.
-  std::vector<string> tensor_names;
-};
-
 // Flags for common MLIR configurations.
 struct MlirCommonFlags {
   ConfigProto::Experimental::MlirBridgeRollout tf_mlir_enable_mlir_bridge;
 
   bool tf_mlir_enable_merge_control_flow_pass;
   bool tf_mlir_enable_convert_control_to_data_outputs_pass;
+  bool tf_mlir_enable_generic_outside_compilation;
 };
 
 // Flags for the JitRt pipeline -- see tf_jitrt_pipeline.h for details.
 struct JitRtFlags {
   bool always_specialize;
   bool cost_driven_async_parallel_for;
+
+  // Enables tracking of the "live" JitRt queries to, on a crash, identify the
+  // "query of death". See TfJitRtQueryOfDeathLogger.
+  bool log_query_of_death;
+
+  // Enable vectorization, which requires tiling and peeling on different ops.
   bool vectorize;
+
+  // Enables crash reproducer for JitRt MLIR pass manager.
+  bool enable_crash_reproducer;
 };
 
 // Return a pointer to the DumpGraphFlags struct;
@@ -172,10 +186,7 @@ struct JitRtFlags {
 MarkForCompilationPassFlags* GetMarkForCompilationPassFlags();
 BuildXlaOpsPassFlags* GetBuildXlaOpsPassFlags();
 XlaDeviceFlags* GetXlaDeviceFlags();
-const XlaOpsCommonFlags& GetXlaOpsCommonFlags();
-
-const IntroduceFloatingPointJitterPassFlags&
-GetIntroduceFloatingPointJitterPassFlags();
+XlaOpsCommonFlags* GetXlaOpsCommonFlags();
 
 MlirCommonFlags* GetMlirCommonFlags();
 
@@ -186,7 +197,7 @@ const JitRtFlags& GetJitRtFlags();
 // Returns the effective MLIR bridge rollout state based on the flags and the
 // optional configuration.
 ConfigProto::Experimental::MlirBridgeRollout GetMlirBridgeRolloutState(
-    absl::optional<const ConfigProto> config_proto);
+    std::optional<const ConfigProto> config_proto);
 
 // Appends the flag definitions associated with
 // MarkForCompilationPassFlags/DumpGraphFlags to `flag_list`.
@@ -198,6 +209,10 @@ void AppendMarkForCompilationPassFlags(
 // Disables XLA compilation, forces it to return an error message instead. Can
 // be used by a server to ensure that JIT compilation is opt-in.
 void DisableXlaCompilation();
+
+// Enables XLA compilation. Can be used with `DisableXlaCompilation` to
+// enable/disable JIT compilation at different stages.
+void EnableXlaCompilation();
 
 // Returns `false` unless `DisableXlaCompilation` was called.
 bool FailOnXlaCompilation();

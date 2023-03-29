@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-# Lint as: python3
 r"""Micro benchmark.
 
 bazel run -c opt --config=cuda \
-  //third_party/tensorflow/python/ops/numpy_ops/benchmarks:micro_benchmarks -- \
+  //third_party/tensorflow/python/ops/numpy_ops/integration_test/benchmarks:micro_benchmarks -- \
   --number=100 --repeat=100 \
-  --benchmarks=.
+  --benchmark_filter=.
 """
 import gc
 import time

@@ -21,6 +21,8 @@ limitations under the License.
 namespace tensorflow {
 
 Status Var::AsGraphDef(GraphDefBuilder* builder, Node** out) const {
+  // Set a shared_name so that the created resource can outlive the graph that
+  // created it.
   Node* var = ops::SourceOp(
       "VarHandleOp",
       builder->opts()
@@ -35,6 +37,6 @@ Status Var::AsGraphDef(GraphDefBuilder* builder, Node** out) const {
                     builder->opts().WithAttr("dtype", tensor_.dtype()));
   *out =
       ops::UnaryOp("Identity", var, builder->opts().WithControlInput(assign));
-  return Status::OK();
+  return OkStatus();
 }
 }  //  end namespace tensorflow

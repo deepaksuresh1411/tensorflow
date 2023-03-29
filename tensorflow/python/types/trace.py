@@ -26,10 +26,14 @@ traced (a process known as retracing).
 """
 
 import abc
-from typing import Optional, Sequence
+from typing import Any, List, Optional, Sequence
+
 from typing_extensions import Protocol
 from typing_extensions import runtime_checkable
+
+from tensorflow.python.types import core
 from tensorflow.python.util.tf_export import tf_export
+from tensorflow.tools.docs import doc_controls
 
 
 @tf_export("types.experimental.TraceType", v1=[])
@@ -72,8 +76,9 @@ class TraceType(metaclass=abc.ABCMeta):
 
   ```python
   class FruitTraceType(tf.types.experimental.TraceType):
-    def __init__(self, fruit_type):
-      self.fruit_type = fruit_type
+    def __init__(self, fruit):
+      self.fruit_type = type(fruit)
+      self.fruit_value = fruit
 
     def is_subtype_of(self, other):
        return (type(other) is FruitTraceType and
@@ -82,10 +87,13 @@ class TraceType(metaclass=abc.ABCMeta):
     def most_specific_common_supertype(self, others):
        return self if all(self == other for other in others) else None
 
+    def placeholder_value(self, placeholder_context=None):
+      return self.fruit_value
+
   class Fruit:
 
    def __tf_tracing_type__(self, context):
-     return FruitTraceType(type(self))
+     return FruitTraceType(self)
   ```
 
   Now if we try calling it again:
@@ -153,6 +161,78 @@ class TraceType(metaclass=abc.ABCMeta):
     """
 
   @abc.abstractmethod
+  def placeholder_value(self, placeholder_context) -> Any:
+    """Creates a placeholder for tracing.
+
+    tf.funcion traces with the placeholder value rather than the actual value.
+    For example, a placeholder value can represent multiple different
+    actual values. This means that the trace generated with that placeholder
+    value is more general and reusable which saves expensive retracing.
+
+    Args:
+      placeholder_context: A `PlaceholderContext` container for context
+                           information when creating a placeholder value.
+
+    For the `Fruit` example shared above, implementing:
+
+    ```python
+    class FruitTraceType:
+      def placeholder_value(self, placeholder_context):
+        return Fruit()
+    ```
+    instructs tf.function to trace with the `Fruit()` objects
+    instead of the actual `Apple()` and `Mango()` objects when it receives a
+    call to `get_mixed_flavor(Apple(), Mango())`. For example, Tensor arguments
+    are replaced with Tensors of similar shape and dtype, output from
+    a tf.Placeholder op.
+
+    More generally, placeholder values are the arguments of a tf.function,
+    as seen from the function's body:
+    ```python
+    @tf.function
+    def foo(x):
+      # Here `x` is be the placeholder value
+      ...
+
+    foo(x) # Here `x` is the actual value
+    ```
+    """
+
+  @doc_controls.do_not_doc_inheritable
+  def _to_tensors(self, value) -> List[core.Tensor]:
+    """Breaks down a value of this type into Tensors.
+
+    Args:
+      value: An input value belonging to this TraceType
+
+    Returns:
+      List of Tensors.
+    """
+    del value
+    return []
+
+  @doc_controls.do_not_doc_inheritable
+  def _cast(self, value, casting_context) -> Any:  # pylint:disable=unused-argument
+    """Cast value to this type.
+
+    Args:
+      value: An input value belonging to this TraceType.
+      casting_context: A context reserved for future usage such as to determine
+        casting rules.
+
+    Returns:
+      The value casted to this TraceType.
+
+    Raises:
+      AssertionError: When _cast is not overloaded in subclass,
+        the value is returned directly, and it should be the same to
+        self.placeholder_value().
+    """
+    assert value == self.placeholder_value(
+        PlaceholderContext()), f"Can not cast {value!r} to type {self!r}"
+    return value
+
+  @abc.abstractmethod
   def __hash__(self) -> int:
     pass
 
@@ -171,13 +251,21 @@ class TracingContext(metaclass=abc.ABCMeta):
   __tf_tracing_type__ calls while constructing the TraceType for a particular
   set of objects.
   """
-  pass
+
+
+class PlaceholderContext():
+  """Contains context information for generating placeholders within a scope."""
+
+
+class CastContext():
+  """Contains context info and rules for casting values to a TypeSpec."""
 
 
 @runtime_checkable
 class SupportsTracingProtocol(Protocol):
   """A protocol allowing custom classes to control tf.function retracing."""
 
+  @doc_controls.doc_private
   @abc.abstractmethod
   def __tf_tracing_type__(self, context: TracingContext) -> TraceType:
     """Returns the tracing type of this object.

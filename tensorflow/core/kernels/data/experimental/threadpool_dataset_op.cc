@@ -51,7 +51,7 @@ Status ValidateNumThreads(int32_t num_threads) {
   if (num_threads >= kThreadLimit) {
     return errors::InvalidArgument("`num_threads` must be < ", kThreadLimit);
   }
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace
 
@@ -100,6 +100,12 @@ class ThreadPoolHandleOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("max_intra_op_parallelism",
                                      &max_intra_op_parallelism_));
     OP_REQUIRES_OK(ctx, ValidateNumThreads(num_threads_));
+
+    // For consistency with Dataset, use MaxParallelism if 0 threads are
+    // specified.
+    if (num_threads_ == 0) {
+      num_threads_ = port::MaxParallelism();
+    }
   }
 
   // The resource is deleted from the resource manager only when it is private
@@ -130,7 +136,7 @@ class ThreadPoolHandleOp : public OpKernel {
                                         num_threads_,
                                         /*low_latency_hint=*/false,
                                         max_intra_op_parallelism_);
-                                    return Status::OK();
+                                    return OkStatus();
                                   }));
       initialized_ = true;
     }
@@ -181,7 +187,7 @@ class ThreadPoolDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return absl::make_unique<Iterator>(
+      return std::make_unique<Iterator>(
           Iterator::Params{this, strings::StrCat(prefix, "::ThreadPool")});
     }
 
@@ -196,14 +202,14 @@ class ThreadPoolDatasetOp : public UnaryDatasetOpKernel {
       return "ThreadPoolDatasetOp::Dataset";
     }
 
-    int64_t CardinalityInternal() const override {
-      return input_->Cardinality();
+    int64_t CardinalityInternal(CardinalityOptions options) const override {
+      return input_->Cardinality(options);
     }
 
     Status InputDatasets(
         std::vector<const DatasetBase*>* inputs) const override {
       inputs->push_back(input_);
-      return Status::OK();
+      return OkStatus();
     }
 
     Status CheckExternalState() const override {
@@ -220,7 +226,7 @@ class ThreadPoolDatasetOp : public UnaryDatasetOpKernel {
       TF_RETURN_IF_ERROR(b->AddTensor(resource_handle_, &resource_handle_node));
       TF_RETURN_IF_ERROR(b->AddDataset(
           this, {input_graph_node, resource_handle_node}, output));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
@@ -252,13 +258,13 @@ class ThreadPoolDatasetOp : public UnaryDatasetOpKernel {
                           IteratorStateWriter* writer) override {
         DCHECK(input_impl_ != nullptr);
         TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
-        return Status::OK();
+        return OkStatus();
       }
 
       Status RestoreInternal(IteratorContext* ctx,
                              IteratorStateReader* reader) override {
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-        return Status::OK();
+        return OkStatus();
       }
 
      private:
@@ -303,7 +309,7 @@ class MaxIntraOpParallelismDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, strings::StrCat(prefix, "::MaxIntraOpParallelism")});
   }
 
@@ -318,12 +324,14 @@ class MaxIntraOpParallelismDatasetOp::Dataset : public DatasetBase {
     return "MaxIntraOpParallelismDatasetOp::Dataset";
   }
 
-  int64_t CardinalityInternal() const override { return input_->Cardinality(); }
+  int64_t CardinalityInternal(CardinalityOptions options) const override {
+    return input_->Cardinality(options);
+  }
 
   Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
     inputs->clear();
     inputs->push_back(input_);
-    return Status::OK();
+    return OkStatus();
   }
 
   Status CheckExternalState() const override {
@@ -341,7 +349,7 @@ class MaxIntraOpParallelismDatasetOp::Dataset : public DatasetBase {
                                     &max_intra_op_parallelism_node));
     TF_RETURN_IF_ERROR(b->AddDataset(
         this, {input_graph_node, max_intra_op_parallelism_node}, output));
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -374,13 +382,13 @@ class MaxIntraOpParallelismDatasetOp::Dataset : public DatasetBase {
                         IteratorStateWriter* writer) override {
       DCHECK(input_impl_ != nullptr);
       TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
-      return Status::OK();
+      return OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
                            IteratorStateReader* reader) override {
       TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-      return Status::OK();
+      return OkStatus();
     }
 
     TraceMeMetadata GetTraceMeMetadata() const override {
@@ -435,7 +443,7 @@ class PrivateThreadPoolDatasetOp::Dataset : public DatasetBase {
         traceme_metadata_(
             {{"num_threads",
               strings::Printf("%lld", static_cast<long long>(num_threads_))}}) {
-    thread_pool_ = absl::make_unique<thread::ThreadPool>(
+    thread_pool_ = std::make_unique<thread::ThreadPool>(
         ctx->env(), ThreadOptions{}, "data_private_threadpool", num_threads_);
     input_->Ref();
   }
@@ -444,7 +452,7 @@ class PrivateThreadPoolDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(
+    return std::make_unique<Iterator>(
         Iterator::Params{this, strings::StrCat(prefix, "::PrivateThreadPool")});
   }
 
@@ -459,12 +467,14 @@ class PrivateThreadPoolDatasetOp::Dataset : public DatasetBase {
     return "PrivateThreadPoolDatasetOp::Dataset";
   }
 
-  int64_t CardinalityInternal() const override { return input_->Cardinality(); }
+  int64_t CardinalityInternal(CardinalityOptions options) const override {
+    return input_->Cardinality(options);
+  }
 
   Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
     inputs->clear();
     inputs->push_back(input_);
-    return Status::OK();
+    return OkStatus();
   }
 
   Status CheckExternalState() const override {
@@ -481,7 +491,7 @@ class PrivateThreadPoolDatasetOp::Dataset : public DatasetBase {
     TF_RETURN_IF_ERROR(b->AddScalar(num_threads_, &num_threads_node));
     TF_RETURN_IF_ERROR(
         b->AddDataset(this, {input_graph_node, num_threads_node}, output));
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -517,13 +527,13 @@ class PrivateThreadPoolDatasetOp::Dataset : public DatasetBase {
                         IteratorStateWriter* writer) override {
       DCHECK(input_impl_ != nullptr);
       TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
-      return Status::OK();
+      return OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
                            IteratorStateReader* reader) override {
       TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-      return Status::OK();
+      return OkStatus();
     }
 
     TraceMeMetadata GetTraceMeMetadata() const override {

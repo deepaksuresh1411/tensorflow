@@ -31,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/path.h"
+#include "tensorflow/tsl/lib/io/buffered_file.h"
 
 using llvm::raw_ostream;
 
@@ -137,9 +138,6 @@ struct CrashAnalysisCrashReproducerStream
 
 }  // namespace
 
-const char kCrashReproducerStdErr[] = "-";
-const char kCrashReproducerCrashAnalysis[] = "crash_analysis";
-
 Status CreateFileForDumping(llvm::StringRef name,
                             std::unique_ptr<raw_ostream>* os,
                             std::string* filepath, llvm::StringRef dirname) {
@@ -150,7 +148,7 @@ Status CreateFileForDumping(llvm::StringRef name,
     dir = GetDumpDirFromEnvVar();
 
   if (dir.empty()) {
-    return Status(error::Code::INVALID_ARGUMENT,
+    return Status(absl::StatusCode::kInvalidArgument,
                   "(TF_DUMP_GRAPH_PREFIX not specified)");
   }
 
@@ -166,7 +164,7 @@ Status CreateFileForDumping(llvm::StringRef name,
   if (!status.ok()) {
     LOG(WARNING) << "Failed to create '" << dir
                  << "' directory for dumping: " << status;
-    return Status(error::Code::UNAVAILABLE, "(unavailable)");
+    return Status(absl::StatusCode::kUnavailable, "(unavailable)");
   }
   *filepath = io::JoinPath(dir, MakeUniqueFilename(std::string(name)));
 
@@ -175,45 +173,39 @@ Status CreateFileForDumping(llvm::StringRef name,
   status = env->NewWritableFile(*filepath, &file);
   if (!status.ok()) {
     LOG(WARNING) << "Failed to create file '" << filepath << "': " << status;
-    return Status(error::Code::UNAVAILABLE, "(unavailable)");
+    return Status(absl::StatusCode::kUnavailable, "(unavailable)");
   }
+  file = std::make_unique<tsl::BufferedWritableFile>(std::move(file));
   *os = std::make_unique<WritableFileRawStream>(std::move(file));
   return Status();
 }
 
-std::string DumpCrashReproducerToFile(llvm::StringRef name,
-                                      const mlir::PassManager& pm,
-                                      mlir::Operation* op,
-                                      llvm::StringRef dirname) {
-  std::unique_ptr<llvm::raw_ostream> os;
-  std::string filepath;
-  Status result = CreateFileForDumping(name, &os, &filepath, dirname);
-  if (!result.ok()) return result.error_message();
-
+// Prints the pass pipeline of `pass_manager` to `os`.
+void PrintPassPipeline(const mlir::PassManager& pass_manager,
+                       mlir::Operation* op, llvm::raw_ostream& os) {
   std::string str;
   llvm::raw_string_ostream passOS(str);
-  llvm::interleaveComma(pm.getPasses(), passOS, [&](mlir::Pass& pass) {
-    pass.printAsTextualPipeline(passOS);
-  });
-  *os << "// configuration: -pass-pipeline='" << passOS.str() << "'";
-  if (op->getContext()->isMultithreadingEnabled())
-    *os << " -mlir-disable-threading";
-  *os << " -verify-each";
-  *os << "\n";
-  op->print(*os, mlir::OpPrintingFlags().useLocalScope().printGenericOpForm());
-  LOG(INFO) << "Dumped MLIR operation '" << op->getName().getStringRef().str()
-            << "' to '" << filepath << "'";
-  return filepath;
+  llvm::interleaveComma(
+      pass_manager.getPasses(), passOS,
+      [&](mlir::Pass& pass) { pass.printAsTextualPipeline(passOS); });
+  os << "{-# external_resources: { mlir_reproducer: { pipeline: "
+        "\"builtin.module("
+     << passOS.str() << ")\", ";
+  os << "disable_threading: true, ";
+  os << "verify_each: true } } #-}";
+  os << "\n\n";
 }
 
 std::string DumpMlirOpToFile(llvm::StringRef name, mlir::Operation* op,
-                             llvm::StringRef dirname) {
+                             llvm::StringRef dirname,
+                             const mlir::PassManager* pass_manager) {
   std::unique_ptr<raw_ostream> os;
   std::string filepath;
   Status result = CreateFileForDumping(name, &os, &filepath, dirname);
   if (!result.ok()) return result.error_message();
 
-  op->print(*os, mlir::OpPrintingFlags().useLocalScope().printGenericOpForm());
+  if (pass_manager) PrintPassPipeline(*pass_manager, op, *os);
+  op->print(*os, mlir::OpPrintingFlags().useLocalScope());
   LOG(INFO) << "Dumped MLIR operation '" << op->getName().getStringRef().str()
             << "' to '" << filepath << "'";
   return filepath;
@@ -311,6 +303,8 @@ void SetCrashReproducer(mlir::PassManager& pm, llvm::StringRef dir_path) {
     // Try to open the file and generate a raw_ostream.
     std::unique_ptr<WritableFile> file;
     Status status = tensorflow::Env::Default()->NewWritableFile(path, &file);
+    file = std::make_unique<tsl::BufferedWritableFile>(std::move(file));
+
     if (!status.ok()) {
       error = absl::StrCat("Failed to create file '", path,
                            "': ", status.error_message());

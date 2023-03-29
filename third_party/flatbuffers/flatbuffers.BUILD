@@ -7,11 +7,14 @@ licenses(["notice"])  # Apache 2.0
 
 exports_files(["LICENSE.txt"])
 
-licenses(["notice"])
+config_setting(
+    name = "platform_freebsd",
+    values = {"cpu": "freebsd"},
+)
 
 config_setting(
-    name = "freebsd",
-    values = {"cpu": "freebsd"},
+    name = "platform_openbsd",
+    values = {"cpu": "openbsd"},
 )
 
 config_setting(
@@ -35,10 +38,22 @@ cc_library(
 filegroup(
     name = "public_headers",
     srcs = [
+        "include/flatbuffers/allocator.h",
+        "include/flatbuffers/array.h",
         "include/flatbuffers/base.h",
+        "include/flatbuffers/bfbs_generator.h",
+        "include/flatbuffers/buffer.h",
+        "include/flatbuffers/buffer_ref.h",
+        "include/flatbuffers/code_generator.h",
         "include/flatbuffers/code_generators.h",
+        "include/flatbuffers/default_allocator.h",
+        "include/flatbuffers/detached_buffer.h",
+        "include/flatbuffers/flatbuffer_builder.h",
         "include/flatbuffers/flatbuffers.h",
+        "include/flatbuffers/flatc.h",
+        "include/flatbuffers/flex_flat_util.h",
         "include/flatbuffers/flexbuffers.h",
+        "include/flatbuffers/grpc.h",
         "include/flatbuffers/hash.h",
         "include/flatbuffers/idl.h",
         "include/flatbuffers/minireflect.h",
@@ -46,7 +61,13 @@ filegroup(
         "include/flatbuffers/reflection_generated.h",
         "include/flatbuffers/registry.h",
         "include/flatbuffers/stl_emulation.h",
+        "include/flatbuffers/string.h",
+        "include/flatbuffers/struct.h",
+        "include/flatbuffers/table.h",
         "include/flatbuffers/util.h",
+        "include/flatbuffers/vector.h",
+        "include/flatbuffers/vector_downward.h",
+        "include/flatbuffers/verifier.h",
     ],
     visibility = ["//:__subpackages__"],
 )
@@ -65,7 +86,7 @@ cc_library(
 cc_binary(
     name = "flatc",
     linkopts = select({
-        ":freebsd": [
+        ":platform_freebsd": [
             "-lm",
         ],
         ":windows": [],
@@ -92,11 +113,24 @@ filegroup(
 cc_library(
     name = "runtime_cc",
     hdrs = [
+        "include/flatbuffers/allocator.h",
+        "include/flatbuffers/array.h",
         "include/flatbuffers/base.h",
+        "include/flatbuffers/buffer.h",
+        "include/flatbuffers/buffer_ref.h",
+        "include/flatbuffers/default_allocator.h",
+        "include/flatbuffers/detached_buffer.h",
+        "include/flatbuffers/flatbuffer_builder.h",
         "include/flatbuffers/flatbuffers.h",
         "include/flatbuffers/flexbuffers.h",
         "include/flatbuffers/stl_emulation.h",
+        "include/flatbuffers/string.h",
+        "include/flatbuffers/struct.h",
+        "include/flatbuffers/table.h",
         "include/flatbuffers/util.h",
+        "include/flatbuffers/vector.h",
+        "include/flatbuffers/vector_downward.h",
+        "include/flatbuffers/verifier.h",
     ],
     linkstatic = 1,
     strip_include_prefix = "/include",
@@ -107,9 +141,11 @@ flatbuffer_py_strip_prefix_srcs(
     name = "flatbuffer_py_strip_prefix",
     srcs = [
         "python/flatbuffers/__init__.py",
+        "python/flatbuffers/_version.py",
         "python/flatbuffers/builder.py",
         "python/flatbuffers/compat.py",
         "python/flatbuffers/encode.py",
+        "python/flatbuffers/flexbuffers.py",
         "python/flatbuffers/number_types.py",
         "python/flatbuffers/packer.py",
         "python/flatbuffers/table.py",
@@ -122,9 +158,11 @@ filegroup(
     name = "runtime_py_srcs",
     srcs = [
         "__init__.py",
+        "_version.py",
         "builder.py",
         "compat.py",
         "encode.py",
+        "flexbuffers.py",
         "number_types.py",
         "packer.py",
         "table.py",
@@ -140,7 +178,7 @@ py_library(
 
 filegroup(
     name = "runtime_java_srcs",
-    srcs = glob(["java/com/google/flatbuffers/**/*.java"]),
+    srcs = glob(["java/src/main/java/com/google/flatbuffers/**/*.java"]),
 )
 
 java_library(

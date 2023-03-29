@@ -1,4 +1,3 @@
-# Lint as: python3
 # Copyright 2017 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,11 +19,12 @@ import contextlib
 import enum  # pylint: disable=g-bad-import-order
 import gzip
 import inspect
+import logging
 import os
-from typing import List, Sequence, Tuple, Union
+from typing import Any, List, Mapping, Optional, Sequence, Tuple, Union
 
 from . import xla_extension as _xla
-
+import ml_dtypes
 import numpy as np
 
 # Note this module does *not* depend on any Python protocol buffers. The XLA
@@ -44,29 +44,32 @@ profiler = _xla.profiler
 
 # Just an internal arbitrary increasing number to help with backward-compatible
 # changes.
-_version = 61
+_version = 144
 
 # Version number for MLIR:Python components.
-mlir_api_version = 3
+mlir_api_version = 47
 
 xla_platform_names = {
     'cpu': 'Host',
     'gpu': 'CUDA',
 }
 
+logger = logging.getLogger(__name__)
+
+_NameValueMapping = Mapping[str, Union[str, int, List[int], float]]
+
 
 def make_interpreter_client():
   return _xla.get_interpreter_client()
 
 
-def make_cpu_client(*, use_tfrt=False):
-  if use_tfrt:
-    return _xla.get_tfrt_cpu_client(asynchronous=True)
-  else:
-    return _xla.get_cpu_client(asynchronous=True)
+def make_cpu_client(*, use_tfrt: bool = True) -> ...:
+  assert use_tfrt
+  return _xla.get_tfrt_cpu_client(asynchronous=True)
 
 
-def make_gpu_client(distributed_client=None, node_id=0):
+def make_gpu_client(distributed_client=None, node_id=0, platform_name=None,
+                    allowed_devices=None):
   """Returns a GPU client. BFC allocator is used by default."""
   allocator = os.getenv('XLA_PYTHON_CLIENT_ALLOCATOR', 'default').lower()
   memory_fraction = os.getenv('XLA_PYTHON_CLIENT_MEM_FRACTION')
@@ -92,11 +95,80 @@ def make_gpu_client(distributed_client=None, node_id=0):
       asynchronous=True,
       allocator_config=config,
       distributed_client=distributed_client,
-      node_id=node_id)
+      node_id=node_id,
+      platform_name=platform_name,
+      allowed_devices=allowed_devices)
 
 
-def make_tpu_client():
-  return _xla.get_tpu_client(max_inflight_computations=32)
+def make_tfrt_tpu_c_api_client(options: Optional[_NameValueMapping] = None):
+  if options is None:
+    options = {}
+  return _xla.get_c_api_client('tpu', options)
+
+
+def load_pjrt_plugin_dynamically(plugin_name: str, library_path: str) -> None:
+  _xla.load_pjrt_plugin(plugin_name, library_path)
+
+
+def make_c_api_client(
+    plugin_name: str,
+    options: Optional[_NameValueMapping] = None,
+):
+  """Creates a PJRT C API client for a PJRT plugin.
+
+  It is required that load_pjrt_plugin_dynamically is called once with the same
+  plugin_name before this method is called.
+
+  Args:
+     plugin_name: the name of the PJRT plugin.
+     options: extra platform-specific options.
+
+  Returns:
+     A PJRT C API client for plugin_name.
+  """
+  if options is None:
+    options = {}
+  return _xla.get_c_api_client(plugin_name, options)
+
+
+def _use_pjrt_c_api() -> bool:
+  use_pjrt_c_api = os.getenv('JAX_USE_PJRT_C_API_ON_TPU', 'false')
+  if use_pjrt_c_api not in ('1', '0', 'true', 'false'):
+    raise ValueError(
+        'JAX_USE_PJRT_C_API_ON_TPU env var must be "0", "1", "true" or '
+        f'"false", got "{use_pjrt_c_api}"')
+  return use_pjrt_c_api in ('1', 'true')
+
+
+def make_tpu_client(use_pjrt_c_api: bool = False):
+  """Returns a TPU client. Defaults to allowing 32 in-flight computations."""
+  if use_pjrt_c_api or _use_pjrt_c_api():
+    library_path = os.getenv('TPU_LIBRARY_PATH', 'libtpu.so')
+    load_pjrt_plugin_dynamically('tpu', library_path)
+    return make_tfrt_tpu_c_api_client()
+
+  max_inflight_computations = os.getenv(
+      'JAX_TPU_MAX_INFLIGHT_COMPUTATIONS', '32')
+  try:
+    max_inflight_computations = int(max_inflight_computations)
+  except ValueError as e:
+    raise ValueError(
+        f'JAX_TPU_MAX_INFLIGHT_COMPUTATIONS env var must be an int, '
+        f'got {max_inflight_computations}') from e
+  return _xla.get_tpu_client(
+      max_inflight_computations=max_inflight_computations)
+
+
+def make_plugin_device_client():
+  """Returns a plugin device client."""
+  try:
+    return _xla.get_plugin_device_client()
+  except AttributeError as e:
+    raise AttributeError(
+        'xla_extension has no attributes named get_plugin_device_client. '
+        'Compile TensorFlow with '
+        '//tensorflow/compiler/xla/python:enable_plugin_device set to true '
+        '(defaults to false) to enable this.') from e
 
 
 class OpMetadata:
@@ -123,7 +195,9 @@ def CurrentSourceInfoMetadata(op_type=None, op_name=None, skip_frames=1):
 
 PrimitiveType = _xla.PrimitiveType
 
-bfloat16 = _xla.bfloat16_dtype()
+bfloat16 = ml_dtypes.bfloat16
+float8_e4m3fn = ml_dtypes.float8_e4m3fn
+float8_e5m2 = ml_dtypes.float8_e5m2
 
 XLA_ELEMENT_TYPE_TO_DTYPE = {
     PrimitiveType.PRED: np.dtype('bool'),
@@ -135,6 +209,8 @@ XLA_ELEMENT_TYPE_TO_DTYPE = {
     PrimitiveType.U16: np.dtype('uint16'),
     PrimitiveType.U32: np.dtype('uint32'),
     PrimitiveType.U64: np.dtype('uint64'),
+    PrimitiveType.F8E4M3FN: np.dtype(float8_e4m3fn),
+    PrimitiveType.F8E5M2: np.dtype(float8_e5m2),
     PrimitiveType.BF16: np.dtype(bfloat16),
     PrimitiveType.F16: np.dtype('float16'),
     PrimitiveType.F32: np.dtype('float32'),
@@ -311,7 +387,7 @@ def execute_with_python_values(executable, arguments, backend):
 
   arguments = [put(arg) for arg in arguments]
   outputs = executable.execute(arguments)
-  return [x.to_py() for x in outputs]
+  return [np.asarray(x) for x in outputs]
 
 
 def execute_with_python_values_replicated(executable, arguments, backend):
@@ -334,7 +410,7 @@ def execute_with_python_values_replicated(executable, arguments, backend):
 
   inputs = [copy_to_devices(pyvals) for pyvals in zip(*arguments)]
   outputs = executable.execute_sharded_on_local_devices(inputs)
-  return [[x.to_py() for x in xs] for xs in zip(*outputs)]
+  return [[np.asarray(x) for x in xs] for xs in zip(*outputs)]
 
 
 class PaddingType(enum.Enum):
@@ -379,12 +455,41 @@ XlaOp = _xla.XlaOp
 FftType = _xla.FftType
 Client = _xla.Client
 Buffer = _xla.Buffer
+ArrayImpl = _xla.ArrayImpl
 DeviceArrayBase = _xla.DeviceArrayBase
-Executable = _xla.Executable
+LoadedExecutable = _xla.LoadedExecutable
 OpSharding = _xla.OpSharding
+HloSharding = _xla.HloSharding
+Sharding = _xla.Sharding
+XLACompatibleSharding = _xla.XLACompatibleSharding
+NamedSharding = _xla.NamedSharding
+SingleDeviceSharding = _xla.SingleDeviceSharding
+PmapSharding = _xla.PmapSharding
+GSPMDSharding = _xla.GSPMDSharding
 
 
-def register_custom_call_target(name, fn, platform='cpu'):
+def LoadedExecutable_execute(self, arguments, device=None):
+  del device
+  results = self.execute_sharded(arguments)
+  return [x[0] for x in results.disassemble_into_single_device_arrays()]
+
+
+def LoadedExecutable_execute_with_token(self, arguments, device=None):
+  del device
+  results = self.execute_sharded(arguments, with_tokens=True)
+  return (
+      [x[0] for x in results.disassemble_into_single_device_arrays()],
+      results.consume_token().get_token(0),
+  )
+
+
+LoadedExecutable.execute = LoadedExecutable_execute
+LoadedExecutable.execute_with_token = LoadedExecutable_execute_with_token
+
+
+def register_custom_call_target(
+    name: str, fn: Any, platform: str = 'cpu'
+) -> None:
   """Registers a custom call target.
 
   Args:
@@ -400,6 +505,8 @@ def register_custom_call_target(name, fn, platform='cpu'):
 
 # Deprecated. Use register_custom_call_target instead.
 register_cpu_custom_call_target = register_custom_call_target
+register_custom_call_partitioner = _xla.register_custom_call_partitioner
+hlo_sharding_util = _xla.hlo_sharding_util
 
 
 class PaddingConfigDimension:
@@ -652,6 +759,13 @@ def heap_profile(client: Client) -> bytes:
   return gzip.compress(client.heap_profile())
 
 
+XlaRuntimeError = _xla.XlaRuntimeError
+
 # Perform one last garbage collection of deferred Python references. This is
 # mostly to keep ASAN happy.
 atexit.register(_xla.collect_garbage)
+
+weakref_lru_cache = _xla.weakref_lru_cache
+array_result_handler = _xla.array_result_handler
+copy_array_to_devices_with_sharding = _xla.copy_array_to_devices_with_sharding
+batched_device_put = _xla.batched_device_put

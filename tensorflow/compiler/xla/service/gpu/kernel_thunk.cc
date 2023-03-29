@@ -15,31 +15,37 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/gpu/kernel_thunk.h"
 
-#include "absl/memory/memory.h"
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_executable.h"
 #include "tensorflow/compiler/xla/service/gpu/stream_executor_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/compiler/xla/stream_executor/device_memory.h"
+#include "tensorflow/compiler/xla/stream_executor/kernel.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/util.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/stream_executor/device_memory.h"
-#include "tensorflow/stream_executor/kernel.h"
+#include "tensorflow/tsl/platform/errors.h"
+#include "tensorflow/tsl/platform/logging.h"
 
 namespace xla {
 namespace gpu {
 
 KernelThunk::KernelThunk(ThunkInfo thunk_info,
-                         absl::Span<const BufferAllocation* const> args,
+                         std::vector<BufferAllocation::Slice> args,
                          const std::string& kernel_name,
-                         const LaunchDimensions& launch_dimensions)
+                         const LaunchDimensions& launch_dimensions,
+                         std::vector<mlir::Value> values)
     : Thunk(Kind::kKernel, thunk_info),
-      args_(args.begin(), args.end()),
+      args_(std::move(args)),
       kernel_name_(kernel_name),
-      launch_dimensions_(launch_dimensions) {}
+      launch_dimensions_(launch_dimensions),
+      values_(std::move(values)) {}
 
 std::string KernelThunk::ToStringExtra(int indent) const {
   return absl::StrFormat(", kernel = %s, launch dimensions = %s", kernel_name_,
@@ -60,19 +66,20 @@ Status KernelThunk::Initialize(const GpuExecutable& executable,
     TF_ASSIGN_OR_RETURN(
         std::unique_ptr<se::KernelBase> kernel,
         CreateKernel(kernel_name_, args_.size(), executable.text(),
-                     executable.binary(), executor));
+                     executable.binary(), executor,
+                     launch_dimensions_.SharedMemBytes()));
 
     kernel_cache_.emplace(executor, std::move(kernel));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 static void PrintBufferContents(
     se::Stream* stream, absl::Span<const se::DeviceMemoryBase> buffer_args) {
   int input_idx = 0;
   for (const se::DeviceMemoryBase& buf : buffer_args) {
-    auto host_buffer = absl::make_unique<char[]>(buf.size());
+    auto host_buffer = std::make_unique<char[]>(buf.size());
     CHECK(stream->ThenMemcpy(host_buffer.get(), buf, buf.size()).ok());
     CHECK(stream->BlockHostUntilDone().ok());
 
@@ -102,11 +109,10 @@ Status KernelThunk::ExecuteOnStream(const ExecuteParams& params) {
 
   VLOG(3) << "Launching " << kernel->name();
   absl::InlinedVector<se::DeviceMemoryBase, 4> buffer_args;
-  for (const BufferAllocation* arg : args_) {
-    se::DeviceMemoryBase buf =
-        params.buffer_allocations->GetDeviceAddress(arg->index());
-    VLOG(3) << "  Arg: alloc #" << arg->index() << ": " << buf.opaque() << "  ("
-            << buf.size() << "B)";
+  for (const BufferAllocation::Slice& arg : args_) {
+    se::DeviceMemoryBase buf = params.buffer_allocations->GetDeviceAddress(arg);
+    VLOG(3) << "  Arg: alloc #" << arg.index() << ", offset: " << arg.offset()
+            << ": " << buf.opaque() << " (" << buf.size() << "B)";
     buffer_args.push_back(buf);
   }
 

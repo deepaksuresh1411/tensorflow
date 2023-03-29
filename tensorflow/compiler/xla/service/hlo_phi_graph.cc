@@ -50,7 +50,7 @@ HloValue::Id PhiGraph::FindOptimizedValue(const HloValue::Id id) {
 PhiGraph::Node* PhiGraph::CreateOrReuseNode(const HloValue& value) {
   auto iter = value_id_to_node_.find(value.id());
   if (iter == value_id_to_node_.end()) {
-    node_storage_.emplace_back(absl::make_unique<Node>());
+    node_storage_.emplace_back(std::make_unique<Node>());
     Node* node = node_storage_.back().get();
     node->value_id = value.id();
     value_id_to_node_[value.id()] = node;
@@ -115,14 +115,15 @@ void PhiGraph::RegisterPhi(const HloValue& value,
 std::string PhiGraph::ToString() {
   std::string out = "PhiGraph: \n";
   for (auto& node : node_storage_) {
-    std::string is_phi = node->is_phi ? ", phi" : "";
-    std::string is_optimized = node->mark_as_dead ? ", dead" : "";
     absl::StrAppend(&out, node->value_id);
-    absl::StrAppend(&out, is_phi);
-    absl::StrAppend(&out, is_optimized, ":\n");
+    if (node->is_phi) {
+      absl::StrAppend(&out, ", phi");
+    }
+    if (node->mark_as_dead) {
+      absl::StrAppend(&out, ", dead", ":\n");
+    }
     for (Node* input : node->operands) {
-      absl::StrAppend(&out, "  ", input->value_id);
-      absl::StrAppend(&out, "\n");
+      absl::StrAppend(&out, "  ", input->value_id, "\n");
     }
   }
   return out;

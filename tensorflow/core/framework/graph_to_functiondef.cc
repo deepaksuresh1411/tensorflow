@@ -143,7 +143,7 @@ Status NodeNameMapping::UseOutputName(const string& name) {
         "' appears more than once in 'output_names' array.");
   }
   used_names_.emplace(name, 0);
-  return Status::OK();
+  return OkStatus();
 }
 
 string NodeNameMapping::Lookup(const string& name) const {
@@ -289,7 +289,7 @@ Status FillFunctionBody(
       func_attr_names.insert(func_attr_name);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GraphToFunctionDefHelper(
@@ -306,10 +306,13 @@ Status GraphToFunctionDefHelper(
     if ((*args_or_retvals)[index].node == nullptr) {
       (*args_or_retvals)[index].node = node;
     } else {
-      return errors::InvalidArgument("Multiple '", node->type_string(),
-                                     "' nodes found with index ", index);
+      return errors::InvalidArgument(
+          "Multiple '", node->type_string(), "' nodes found with index ", index,
+          "; originally we already have:\n",
+          (*args_or_retvals)[index].node->DebugString(), "\nNow we have:\n",
+          node->DebugString());
     }
-    return Status::OK();
+    return OkStatus();
   };
 
   std::vector<const Node*> body_nodes;
@@ -348,7 +351,7 @@ Status GraphToFunctionDefHelper(
                                            "' node at index ", i);
           }
         }
-        return Status::OK();
+        return OkStatus();
       };
 
   TF_RETURN_IF_ERROR(validate_args_retvals(inputs, "_Arg"));
@@ -580,7 +583,7 @@ Status GraphToFunctionDef(const Graph& fn_body, const string& fn_name,
     fdef->mutable_signature()->add_control_output(control_output);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GraphToFunctionDef(

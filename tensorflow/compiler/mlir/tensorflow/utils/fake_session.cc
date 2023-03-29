@@ -66,20 +66,20 @@ void FakeSession::BuildDeviceManager() {
   auto device =
       tensorflow::DeviceFactory::NewDevice("CPU", {}, kDeviceNamePrefix);
   device_mgr_ =
-      absl::make_unique<tensorflow::StaticDeviceMgr>(std::move(device));
+      std::make_unique<tensorflow::StaticDeviceMgr>(std::move(device));
 }
 
 void FakeSession::InitVariables() {
   tensorflow::Device* device = nullptr;
   auto status = device_mgr_->LookupDevice(kDeviceName, &device);
-  if (status != Status::OK()) return;
+  if (status != ::tensorflow::OkStatus()) return;
   auto container = device->resource_manager()->default_container();
 
   // Create 2 resources and initialize them with dummy values.
-  (void)device->resource_manager()->Create(
-      container, "var1", new tensorflow::Var(tensorflow::DataType::DT_FLOAT));
-  (void)device->resource_manager()->Create(
-      container, "var2", new tensorflow::Var(tensorflow::DataType::DT_FLOAT));
+  TF_CHECK_OK(device->resource_manager()->Create(
+      container, "var1", new tensorflow::Var(tensorflow::DataType::DT_FLOAT)));
+  TF_CHECK_OK(device->resource_manager()->Create(
+      container, "var2", new tensorflow::Var(tensorflow::DataType::DT_FLOAT)));
 }
 
 Status FakeSession::Create(const tensorflow::GraphDef& graph) {
@@ -102,9 +102,9 @@ Status FakeSession::LocalDeviceManager(
     const tensorflow::DeviceMgr** deviceMgrPtr) {
   Initialize();
   if (kSessionOptions->fail_to_fetch_local_device_manager)
-    return Status(tensorflow::error::UNKNOWN, "No Local Device Manager");
+    return Status(absl::StatusCode::kUnknown, "No Local Device Manager");
   *deviceMgrPtr = device_mgr_.get();
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 Status FakeSession::Run(
@@ -171,7 +171,7 @@ Status FakeSession::Run(
 
       outputs->push_back(t);
     } else if (absl::StartsWith(output_name, "var")) {
-      return Status(tensorflow::error::NOT_FOUND,
+      return Status(absl::StatusCode::kNotFound,
                     "Can't find variable " + output_name + " in session");
     } else {
       // Create a scalar float tensor.
@@ -180,7 +180,7 @@ Status FakeSession::Run(
       outputs->push_back(t);
     }
   }
-  return Status::OK();
+  return ::tensorflow::OkStatus();
 }
 
 }  // namespace test_util

@@ -22,6 +22,7 @@ limitations under the License.
 #include <algorithm>
 #include <numeric>
 #include <vector>
+
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -138,7 +139,7 @@ struct TopKFunctor<CPUDevice, T> {
         values(r, 0) = input(r, indices(r, 0));
       }
 
-      return Status::OK();
+      return OkStatus();
     }
 
     auto SortIndices = [&](int64_t start_batch, int64_t limit_batch) {
@@ -232,7 +233,7 @@ struct TopKFunctor<CPUDevice, T> {
     Shard(worker_threads.num_threads, worker_threads.workers, num_rows,
           final_cost, SortIndices);
 
-    return Status::OK();
+    return OkStatus();
   }
 };
 

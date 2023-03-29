@@ -15,9 +15,9 @@ limitations under the License.
 #include <memory>
 
 #include "absl/memory/memory.h"
+#include "tensorflow/lite/core/experimental/acceleration/configuration/delegate_registry.h"
 #include "tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h"
 #include "tensorflow/lite/experimental/acceleration/configuration/configuration_generated.h"
-#include "tensorflow/lite/experimental/acceleration/configuration/delegate_registry.h"
 
 namespace tflite {
 namespace delegates {
@@ -30,13 +30,14 @@ class XNNPackPlugin : public DelegatePluginInterface {
   int GetDelegateErrno(TfLiteDelegate* from_delegate) override { return 0; }
   static std::unique_ptr<DelegatePluginInterface> New(
       const TFLiteSettings& acceleration) {
-    return absl::make_unique<XNNPackPlugin>(acceleration);
+    return std::make_unique<XNNPackPlugin>(acceleration);
   }
   explicit XNNPackPlugin(const TFLiteSettings& tflite_settings)
       : options_(TfLiteXNNPackDelegateOptionsDefault()) {
     const auto* xnnpack_settings = tflite_settings.xnnpack_settings();
     if (xnnpack_settings) {
       options_.num_threads = xnnpack_settings->num_threads();
+      options_.flags = xnnpack_settings->flags();
     }
   }
 
